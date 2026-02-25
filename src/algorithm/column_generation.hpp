@@ -1,6 +1,7 @@
 #pragma once
 
 #include "basic_solver.hpp"
+#include "milp_solver.hpp"
 
 #include <vector>
 #include <memory>
@@ -40,13 +41,6 @@ public:
     virtual ~ISubProblemStrategy() = default;
 };
 
-class MasterSolver final : public GRBSolver {
-public:
-    MasterSolver(GRBEnv& env);
-
-    ~MasterSolver();
-};
-
 class SubSolver {
 public:
     explicit SubSolver(std::unique_ptr<ISubProblemStrategy> strategy);
@@ -79,25 +73,29 @@ public:
     ~PatternUtils()=delete;
 };
 
-class ColumnGeneration {
+class ColumnGeneration : public IMILPAlgorithmStrategy {
 public:
     ColumnGeneration(ProblemType problemType, int maxIters=100, double tol=1e-6);
-    Status Run();
+    Status Initialize();
+    Status Run() override;
     ~ColumnGeneration();
 
 private:
     ProblemType problemType;
     int maxIters;
     double tolerance;
-    GRBEnv env;
-    std::unique_ptr<MasterSolver> master;
+
+    std::unique_ptr<GRBEnv> env;
+    std::unique_ptr<GRBModel> model;
     std::unique_ptr<SubSolver> sub;
     std::unique_ptr<ProblemData> problemData;
     std::unique_ptr<IDataInitializationStrategy> dataIniter;
+    bool initialized = false;
 
     GRBLinExpr obj = 0;
 
-    Status Init();
     void UpdateMP();
     Status Solve();
+
+    void AddPattern(const std::vector<int>& pattern, GRBVar var);
 };

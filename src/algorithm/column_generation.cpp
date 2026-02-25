@@ -45,15 +45,6 @@ double PatternUtils::CalculateReducedCost(const PatternWithInfo& term, const std
     return term.coeff - sum;
 }
 
-MasterSolver::MasterSolver(GRBEnv& env) : GRBSolver(env)
-{
-    std::cout << "===== build MasterSolver =====" << std::endl;
-}
-
-MasterSolver::~MasterSolver() {
-    std::cout << "===== destroy MasterSolver =====" << std::endl;
-}
-
 bool SubSolver::IsParetoImprovement(const PatternWithInfo& newPWI) {
     const Pattern& newPattern = newPWI.pattern;
 
@@ -143,17 +134,33 @@ bool SubSolver::CheckValid(const ProblemData& problemData, const PatternWithInfo
     return strategy->CheckValid(problemData, pwi);
 }
 
-Status ColumnGeneration::Init()
+void ColumnGeneration::AddPattern(const std::vector<int>& pattern, GRBVar var) {
+    GRBConstr* constrs = model->getConstrs();
+    int numConstrs = model->get(GRB_IntAttr_NumConstrs);
+
+    if (pattern.size() != static_cast<size_t>(numConstrs)) {
+        throw GRBException("Pattern size does not match number of constraints", ERROR);
+    }
+
+    for (int i = 0; i < numConstrs; ++i) {
+        model->chgCoeff(constrs[i], var, pattern[i]);
+    }
+}
+
+Status ColumnGeneration::Initialize()
 {
     std::cout << "===== init CG =====" << std::endl;
     std::cout << "problemType=" << problemType << std::endl;
     std::cout << "maxIters=" << maxIters << std::endl;
     std::cout << "tolerance=" << tolerance << std::endl;
 
-    problemData = std::make_unique<ProblemData>();
+    env = std::make_unique<GRBEnv>(true);
+    env->set("LogFile", "gurobi_log.txt");
+    env->set(GRB_IntParam_OutputFlag, 0);
+    env->start();
+    model = std::make_unique<GRBModel>(*env);
 
-    GRBModel model(env);
-    master = std::make_unique<MasterSolver>(env);
+    problemData = std::make_unique<ProblemData>();
 
     auto it = strategyMap.find(problemType);
     if (it == strategyMap.end()) {
@@ -168,9 +175,10 @@ Status ColumnGeneration::Init()
     std::vector<Constraint> constrs = dataIniter->ConstrInit(*problemData);
     sub->InitPatterns(*problemData);
     for (size_t i = 0; i < constrs.size(); ++i) {
-        master->AddConstraint(GRBLinExpr(), std::get<0x2>(constrs[i]), std::get<0x1>(constrs[i]), std::get<0x0>(constrs[i]));
+        model->addConstr(GRBLinExpr(), std::get<0x2>(constrs[i]), std::get<0x1>(constrs[i]), std::get<0x0>(constrs[i]));
     }
-    master->Update();
+    model->update();
+    initialized = true;
 
     return OK;
 }
@@ -186,16 +194,14 @@ void ColumnGeneration::UpdateMP()
     std::cout << "newPatterns.size() in UpdatePatterns: " << newPatterns.size() << std::endl;
     for (size_t i = 0; i < newPatterns.size(); i++) {
         PatternUtils::print(newPatterns[i].pattern);
-        auto& var = master->AddVariable(newPatterns[i].lb, newPatterns[i].ub, newPatterns[i].coeff, GRB_CONTINUOUS, "x" + std::to_string(baseOffset + i));
+        auto var = model->addVar(newPatterns[i].lb, newPatterns[i].ub, newPatterns[i].coeff, GRB_CONTINUOUS, "x" + std::to_string(baseOffset + i));
         std::cout << "x" + std::to_string(baseOffset + i) + ":[" << newPatterns[i].lb << ", " << newPatterns[i].ub << "], coef: " << newPatterns[i].coeff << std::endl;
-        master->AddPattern(newPatterns[i].pattern, var);
+        AddPattern(newPatterns[i].pattern, var);
         obj = obj + newPatterns[i].coeff * var;
     }
 
-    master->SetObjective(obj, GRB_MINIMIZE);
-    master->Update();
-
-    master->printObjective();
+    model->setObjective(obj, GRB_MINIMIZE);
+    model->update();
 }
 
 Status ColumnGeneration::Solve()
@@ -207,14 +213,19 @@ Status ColumnGeneration::Solve()
         std::cout << "===== CG iter " << iter << " =====" << std::endl;
 
         UpdateMP();
-        bool status = master->Solve(); // RLMP
-        if (!status) {
+        model->optimize(); // RLMP
+        int solveStatus = model->get(GRB_IntAttr_Status);
+        if (solveStatus == GRB_OPTIMAL || (solveStatus == GRB_TIME_LIMIT && model->get(GRB_IntAttr_SolCount)>0)) {
+            std::cout << "Current objective: " << model->get(GRB_DoubleAttr_ObjVal) << std::endl;
+        } else {
+            std::cerr << "MP not solved to optimality, status: " << solveStatus << std::endl;
             return ERROR;
         }
 
         std::vector<double> duals;
-        for (size_t i = 0; i < master->GetConstraintsNum(); ++i) {
-            duals.push_back(master->GetDual(i));
+        GRBConstr* constrs = model->getConstrs();
+        for (size_t i = 0; i < static_cast<size_t>(model->get(GRB_IntAttr_NumConstrs)); ++i) {
+            duals.push_back(constrs[i].get(GRB_DoubleAttr_Pi));
         }
 
         bool needUpdate = sub->FindNewPatterns(*problemData, duals);
@@ -229,9 +240,11 @@ Status ColumnGeneration::Solve()
 
 Status ColumnGeneration::Run()
 {
-    Status status = Init();
-    if (status) {
-        return status;
+    if (!initialized) {
+        Status status = Initialize();
+        if (status) {
+            return status;
+        }
     }
 
     return Solve();

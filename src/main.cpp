@@ -35,12 +35,6 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (argc == 1) {
-        cout << "No arguments provided, running test function...（无参数传入，运行测试函数）" << endl;
-        SolveWithGurobiTest();
-        return 0;
-    }
-
     string alg = "unsigned";
     string pb = "unsigned";
     string desc = "unsigned";
@@ -64,57 +58,62 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (alg != "unsigned" && pb != "unsigned") {
-        auto splitComma = [](const string& value) {
-            vector<string> parts;
-            string token;
-            stringstream ss(value);
-            while (getline(ss, token, ',')) {
-                if (!token.empty()) {
-                    parts.push_back(token);
-                }
-            }
-            if (parts.empty()) {
-                parts.push_back(value);
-            }
-            return parts;
-        };
-
-        vector<string> descList = splitComma(desc);
-        string algLower = alg;
-        string pbLower = pb;
-        for (char& c : algLower) c = tolower(c);
-        for (char& c : pbLower) c = tolower(c);
-        for (const auto& descVal : descList) {
-            string descUpper = descVal;
-            for (char& c : descUpper) c = toupper(c);
-
-            string coreText = "使用 " + alg + " 求解 " + pb + "_" + descVal;
-            int totalWidth = 80;
-            int InfoWidth = coreText.size();
-            int padding = max(0, (totalWidth - InfoWidth) / 2);
-            cout << "\n" << string(totalWidth, '=') << endl;
-            cout << string(padding, ' ') << coreText;
-            cout << "\n" << string(totalWidth, '=') << endl;
-
-            bool err = false;
-
-            if (algLower == "solver") {
-                SolveWithGurobiTest();
-            } else if (algLower == "cg") {
-                if (pbLower == "cuttingstock") {
-                    auto pbObj = ColumnGeneration(CUTTINGSTOCK);
-                    pbObj.Run();
-                } else {
-                    err = true;
-                }
-            } else {
-                err = true;
-            }
-            if (err) {
-                cout << "invalid problem or algorithm combination: " << alg << " & " << pb << "（无效的问题或算法组合）" << endl;
+    auto splitComma = [](const string& value) {
+        vector<string> parts;
+        string token;
+        stringstream ss(value);
+        while (getline(ss, token, ',')) {
+            if (!token.empty()) {
+                parts.push_back(token);
             }
         }
+        if (parts.empty()) {
+            parts.push_back(value);
+        }
+        return parts;
+    };
+
+    vector<string> descList = splitComma(desc);
+    string algLower = alg;
+    string pbLower = pb;
+    for (char& c : algLower) c = tolower(c);
+    for (char& c : pbLower) c = tolower(c);
+    for (const auto& descVal : descList) {
+        string descUpper = descVal;
+        for (char& c : descUpper) c = toupper(c);
+
+        string coreText = "使用 " + alg + " 求解 " + pb + "_" + descVal;
+        int totalWidth = 80;
+        int InfoWidth = coreText.size();
+        int padding = max(0, (totalWidth - InfoWidth) / 2);
+        cout << "\n" << string(totalWidth, '=') << endl;
+        cout << string(padding, ' ') << coreText;
+        cout << "\n" << string(totalWidth, '=') << endl;
+
+        bool err = false;
+
+        ProblemType problemType;
+        if (pbLower == "cuttingstock") {
+            problemType = CUTTINGSTOCK;
+        } else if (pbLower == "test") {
+            problemType = TEST;
+        } else {
+            err = true;
+        }
+
+        if (err) {
+            cout << "invalid problem " << pb << endl;
+            return 0;
+        }
+
+        MILPSolver solver;
+
+        if (algLower == "cg") {
+            solver.SetAlgorithm(std::make_unique<ColumnGeneration>(problemType));
+        } else {
+            solver.SetAlgorithm(std::make_unique<UsingSolver>(problemType));
+        }
+        solver.Run();
     }
 
     return 0;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "column_generation.hpp"
+#include "direct_solver.hpp"
 
 class CuttingStockSubProblemStrategy : public ISubProblemStrategy {
 public:
@@ -15,4 +16,13 @@ class CuttingStockDataInitializationStrategy : public IDataInitializationStrateg
 public:
     void DataInit(ProblemData& problemData) override;
     std::vector<Constraint> ConstrInit(ProblemData& problemData) override;
+};
+
+class CuttingStockDirectSolverStrategy : public IDirectSolverStrategy {
+public:
+    void BuildModel(GRBSolver& solver, const ProblemData& data) override;
+    void PrintSolution(GRBSolver& solver, const ProblemData& data) override;
+private:
+    std::vector<std::vector<GRBVar>> x;  // x[i][j]: items of type i from stock j
+    std::vector<GRBVar> y;               // y[j]: 1 if stock j is used
 };

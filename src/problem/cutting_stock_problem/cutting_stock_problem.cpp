@@ -145,3 +145,76 @@ std::vector<Constraint> CuttingStockDataInitializationStrategy::ConstrInit(Probl
 
     return constrs;
 }
+
+void CuttingStockDirectSolverStrategy::BuildModel(GRBSolver& solver, const ProblemData& data)
+{
+    auto itemLengths = data.getData<std::vector<int>>("itemLengths");
+    auto demands     = data.getData<std::vector<int>>("demands");
+    int  stockLength = data.getData<int>("stockLength");
+
+    int numItems = static_cast<int>(itemLengths.size());
+    // Upper bound on number of stocks: sum of all demands (trivial bound)
+    int N = 0;
+    for (int d : demands) N += d;
+
+    std::cout << "DirectSolver: numItems=" << numItems << ", N=" << N << ", stockLength=" << stockLength << std::endl;
+
+    // y[j]: binary, 1 if stock j is used
+    y.resize(N);
+    GRBLinExpr obj = 0;
+    for (int j = 0; j < N; ++j) {
+        y[j] = solver.AddVariable(0.0, 1.0, 1.0, GRB_BINARY, "y" + std::to_string(j));
+        obj += y[j];
+    }
+    solver.SetObjective(obj, GRB_MINIMIZE);
+
+    // x[i][j]: integer, number of items of type i cut from stock j
+    x.resize(numItems, std::vector<GRBVar>(N));
+    for (int i = 0; i < numItems; ++i) {
+        for (int j = 0; j < N; ++j) {
+            x[i][j] = solver.AddVariable(0.0, GRB_INFINITY, 0.0, GRB_INTEGER,
+                                          "x_" + std::to_string(i) + "_" + std::to_string(j));
+        }
+    }
+
+    // Demand constraints: sum_j x[i][j] >= demands[i]
+    for (int i = 0; i < numItems; ++i) {
+        GRBLinExpr lhs = 0;
+        for (int j = 0; j < N; ++j) {
+            lhs += x[i][j];
+        }
+        solver.AddConstraint(lhs, '>', static_cast<double>(demands[i]),
+                             "demand_" + std::to_string(i));
+    }
+
+    // Capacity constraints: sum_i itemLengths[i]*x[i][j] <= stockLength*y[j]
+    for (int j = 0; j < N; ++j) {
+        GRBLinExpr lhs = 0;
+        for (int i = 0; i < numItems; ++i) {
+            lhs += itemLengths[i] * x[i][j];
+        }
+        GRBLinExpr rhs = static_cast<double>(stockLength) * y[j];
+        solver.AddConstraint(lhs - rhs, '<', 0.0, "capacity_" + std::to_string(j));
+    }
+}
+
+void CuttingStockDirectSolverStrategy::PrintSolution(GRBSolver& solver, const ProblemData& data)
+{
+    auto itemLengths = data.getData<std::vector<int>>("itemLengths");
+    int numItems = static_cast<int>(itemLengths.size());
+    int N = static_cast<int>(y.size());
+
+    for (int j = 0; j < N; ++j) {
+        double yVal = y[j].get(GRB_DoubleAttr_X);
+        if (yVal > 0.5) {
+            std::cout << "Stock " << j << " used:";
+            for (int i = 0; i < numItems; ++i) {
+                double xVal = x[i][j].get(GRB_DoubleAttr_X);
+                if (xVal > 0.5) {
+                    std::cout << "  item[" << i << "](len=" << itemLengths[i] << ") x" << static_cast<int>(std::round(xVal));
+                }
+            }
+            std::cout << std::endl;
+        }
+    }
+}

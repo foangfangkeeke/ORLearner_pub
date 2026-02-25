@@ -1,5 +1,6 @@
 #include "test.hpp"
 #include "cutting_stock_problem.hpp"
+#include "direct_solver.hpp"
 
 #include <iostream>
 #include <fstream>
@@ -32,6 +33,8 @@ int main(int argc, char* argv[]) {
     if (showHelp) {
         cout << "basic usage: " << endl;
         cout << "  " << argv[0] << " --alg solver --pb wirelesschargingstratgies --desc m1 --data test" << endl;
+        cout << "  " << argv[0] << " --alg cg --pb cuttingstock" << endl;
+        cout << "  " << argv[0] << " --alg direct --pb cuttingstock" << endl;
         return 0;
     }
 
@@ -104,6 +107,13 @@ int main(int argc, char* argv[]) {
             } else if (algLower == "cg") {
                 if (pbLower == "cuttingstock") {
                     auto pbObj = ColumnGeneration(CUTTINGSTOCK);
+                    pbObj.Run();
+                } else {
+                    err = true;
+                }
+            } else if (algLower == "direct") {
+                if (pbLower == "cuttingstock") {
+                    auto pbObj = DirectSolver(CUTTINGSTOCK);
                     pbObj.Run();
                 } else {
                     err = true;

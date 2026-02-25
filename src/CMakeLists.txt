@@ -1,12 +1,14 @@
 set(MAIN_SOURCES main.cpp)
 file(GLOB ALGORITHM_SOURCES algorithm/*.cpp)
 file(GLOB UTILS_SOURCES utils/*.cpp)
-file(GLOB PROBLEM_SOURCES problem/*.cpp)
+file(GLOB_RECURSE PROBLEM_SOURCES problem/*.cpp)
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/algorithm
     ${CMAKE_CURRENT_SOURCE_DIR}/utils
     ${CMAKE_CURRENT_SOURCE_DIR}/problem
+    ${CMAKE_CURRENT_SOURCE_DIR}/problem/cutting_stock_problem
+    ${CMAKE_CURRENT_SOURCE_DIR}/problem/test_problem
     ${GUROBI_INCLUDE_DIR}
 )
 

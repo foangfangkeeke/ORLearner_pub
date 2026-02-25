@@ -68,16 +68,13 @@ private:
 
 class GRBSolver {
 public:
-    // 构造函数：直接传入GRBEnv，初始化model
-    GRBSolver(GRBEnv& env) : model(env) {}  // 注意：原代码中GRBModel(env)多余，直接初始化即可
+    GRBSolver(GRBEnv& env) : model(env) {}
 
     virtual ~GRBSolver() = default;
 
-    // 求解方法：修正GRB状态和属性的引用方式
     virtual bool Solve() {
         try {
             model.optimize();
-            // 状态属性为GRB_IntAttr_Status，最优状态为GRB_OPTIMAL（全局常量）
             return model.get(GRB_IntAttr_Status) == GRB_OPTIMAL;
         } catch (GRBException& e) {
             std::cerr << "Gurobi error code = " << e.getErrorCode() << std::endl;

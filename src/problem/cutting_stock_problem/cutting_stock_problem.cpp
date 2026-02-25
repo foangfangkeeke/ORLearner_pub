@@ -6,6 +6,64 @@
 #include <algorithm>
 #include <limits>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+
+namespace {
+bool LoadCuttingStockData(int& stockLength, std::vector<int>& itemLengths, std::vector<int>& demands)
+{
+    const std::filesystem::path dataPath = std::filesystem::path(__FILE__).parent_path() / "cutting_stock_input.txt";
+    std::ifstream fin(dataPath);
+    if (!fin.is_open()) {
+        std::cerr << "Warning: failed to open " << dataPath << ", using defaults." << std::endl;
+        return false;
+    }
+
+    auto parseLine = [](const std::string& line) {
+        std::vector<int> values;
+        std::istringstream iss(line);
+        int v;
+        while (iss >> v) {
+            values.push_back(v);
+        }
+        return values;
+    };
+
+    std::string line;
+    if (!std::getline(fin, line)) {
+        std::cerr << "Warning: missing stockLength line in " << dataPath << ", using defaults." << std::endl;
+        return false;
+    }
+
+    try {
+        stockLength = std::stoi(line);
+    } catch (const std::exception& e) {
+        std::cerr << "Warning: invalid stockLength in " << dataPath << " - " << e.what() << ", using defaults." << std::endl;
+        return false;
+    }
+
+    if (!std::getline(fin, line)) {
+        std::cerr << "Warning: missing itemLengths line in " << dataPath << ", using defaults." << std::endl;
+        return false;
+    }
+    itemLengths = parseLine(line);
+
+    if (!std::getline(fin, line)) {
+        std::cerr << "Warning: missing demands line in " << dataPath << ", using defaults." << std::endl;
+        return false;
+    }
+    demands = parseLine(line);
+
+    if (itemLengths.empty() || demands.empty() || itemLengths.size() != demands.size()) {
+        std::cerr << "Warning: itemLengths/demands mismatch in " << dataPath << ", using defaults." << std::endl;
+        return false;
+    }
+
+    return true;
+}
+} // namespace
 
 void CuttingStockSubProblemStrategy::InitPatterns(const ProblemData& problemData, std::queue<PatternWithInfo>& bfsQueue,
         std::set<PatternWithInfo>& processedPatterns, std::vector<PatternWithInfo>& paretoSet)
@@ -55,13 +113,19 @@ bool CuttingStockSubProblemStrategy::CheckValid(const ProblemData& problemData, 
 
 void CuttingStockDataInitializationStrategy::DataInit(ProblemData& problemData)
 {
-    problemData.addData("stockLength", 16);
-    problemData.addData("itemLengths", std::vector<int>{3, 7, 12});
-    problemData.addData("demands", std::vector<int>{15, 20, 10});
+    int stockLength{};
+    std::vector<int> itemLengths;
+    std::vector<int> demands;
 
-    auto stockLength = problemData.getData<int>("stockLength");
-    auto itemLengths = problemData.getData<std::vector<int>>("itemLengths");
-    auto demands = problemData.getData<std::vector<int>>("demands");
+    if (!LoadCuttingStockData(stockLength, itemLengths, demands)) {
+        throw std::runtime_error("Failed to load cutting stock data from file.");
+    }
+
+    std::cout << "Loaded cutting stock data from file." << std::endl;
+
+    problemData.addData("stockLength", stockLength);
+    problemData.addData("itemLengths", itemLengths);
+    problemData.addData("demands", demands);
 
     std::cout << "stockLength=" << stockLength << std::endl;
     std::cout << "demands:" << std::endl;

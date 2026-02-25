@@ -1,18 +1,13 @@
 #pragma once
 
 #include "basic_solver.hpp"
-#include "column_generation.hpp"
+#include "milp_model.hpp"
 
 #include <memory>
 #include <iostream>
 
-class IDirectSolverStrategy {
-public:
-    virtual void BuildModel(GRBSolver& solver, const ProblemData& data) = 0;
-    virtual void PrintSolution(GRBSolver& solver, const ProblemData& data) = 0;
-    virtual ~IDirectSolverStrategy() = default;
-};
-
+// DirectSolver: solves any problem whose MILP formulation is provided via
+// IMILPFormulator.  It is fully generic — no problem-specific logic lives here.
 class DirectSolver {
 public:
     DirectSolver(ProblemType problemType);
@@ -22,11 +17,8 @@ public:
 private:
     ProblemType problemType;
     GRBEnv env;
-    std::unique_ptr<GRBSolver> solver;
-    std::unique_ptr<ProblemData> problemData;
-    std::unique_ptr<IDataInitializationStrategy> dataIniter;
-    std::unique_ptr<IDirectSolverStrategy> strategy;
+    std::unique_ptr<IMILPFormulator> formulator;
 
     Status Init();
-    Status Solve();
+    Status Solve(const MILPModel& model);
 };

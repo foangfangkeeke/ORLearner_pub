@@ -1,7 +1,7 @@
 #pragma once
 
 #include "column_generation.hpp"
-#include "direct_solver.hpp"
+#include "milp_model.hpp"
 
 class CuttingStockSubProblemStrategy : public ISubProblemStrategy {
 public:
@@ -18,11 +18,12 @@ public:
     std::vector<Constraint> ConstrInit(ProblemData& problemData) override;
 };
 
-class CuttingStockDirectSolverStrategy : public IDirectSolverStrategy {
+// Unified MILP formulator: builds the complete cutting-stock MILP model so
+// that any algorithm (DirectSolver, Benders, …) can consume it without
+// problem-specific logic.
+class CuttingStockMILPFormulator : public IMILPFormulator {
 public:
-    void BuildModel(GRBSolver& solver, const ProblemData& data) override;
-    void PrintSolution(GRBSolver& solver, const ProblemData& data) override;
-private:
-    std::vector<std::vector<GRBVar>> x;  // x[i][j]: items of type i from stock j
-    std::vector<GRBVar> y;               // y[j]: 1 if stock j is used
+    MILPModel Formulate() override;
+    void PrintSolution(const MILPModel& model,
+                       const std::vector<double>& varValues) override;
 };

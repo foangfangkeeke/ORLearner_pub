@@ -4,17 +4,20 @@
 #include <iostream>
 #include <map>
 #include <functional>
+#include <unordered_map>
+#include <stdexcept>
 
+// ── Problem registry ─────────────────────────────────────────────────────────
+// To add a new problem: register its IMILPFormulator factory here.
 static const std::map<ProblemType,
-                      std::tuple<std::function<std::unique_ptr<IDataInitializationStrategy>()>,
-                                 std::function<std::unique_ptr<IDirectSolverStrategy>()>>> directStrategyMap = {
+                      std::function<std::unique_ptr<IMILPFormulator>()>> directFormulatorMap = {
     {
         CUTTINGSTOCK,
-        std::make_tuple(
-            [](){return std::make_unique<CuttingStockDataInitializationStrategy>();},
-            [](){return std::make_unique<CuttingStockDirectSolverStrategy>();})
+        []() { return std::make_unique<CuttingStockMILPFormulator>(); }
     }
 };
+
+// ── DirectSolver ─────────────────────────────────────────────────────────────
 
 DirectSolver::DirectSolver(ProblemType problemType) : problemType(problemType)
 {
@@ -31,40 +34,69 @@ Status DirectSolver::Init()
     std::cout << "===== init DirectSolver =====" << std::endl;
     std::cout << "problemType=" << problemType << std::endl;
 
-    problemData = std::make_unique<ProblemData>();
-    solver = std::make_unique<GRBSolver>(env);
-
-    auto it = directStrategyMap.find(problemType);
-    if (it == directStrategyMap.end()) {
+    auto it = directFormulatorMap.find(problemType);
+    if (it == directFormulatorMap.end()) {
         throw std::invalid_argument("Unsupported problem type for DirectSolver");
     }
-    const auto& strategies = it->second;
-
-    dataIniter = std::get<0>(strategies)();
-    strategy = std::get<1>(strategies)();
-
-    dataIniter->DataInit(*problemData);
-
+    formulator = it->second();
     return OK;
 }
 
-Status DirectSolver::Solve()
+// Build a Gurobi model from a generic MILPModel and solve it.
+Status DirectSolver::Solve(const MILPModel& model)
 {
     std::cout << "===== start DirectSolver =====" << std::endl;
 
-    strategy->BuildModel(*solver, *problemData);
-    solver->Update();
+    GRBSolver solver(env);
 
-    bool status = solver->Solve();
-    if (!status) {
+    // Add variables; store them by name for constraint building.
+    std::unordered_map<std::string, GRBVar> varMap;
+    varMap.reserve(model.variables.size());
+    for (const auto& vd : model.variables) {
+        varMap[vd.name] = solver.AddVariable(vd.lb, vd.ub, 0.0, vd.type, vd.name);
+    }
+
+    // Build and set objective.
+    GRBLinExpr obj = 0;
+    for (const auto& vd : model.variables) {
+        if (vd.objCoeff != 0.0) {
+            obj += vd.objCoeff * varMap[vd.name];
+        }
+    }
+    solver.SetObjective(obj, model.objSense);
+
+    // Add constraints.
+    for (const auto& cd : model.constraints) {
+        GRBLinExpr lhs = 0;
+        for (const auto& term : cd.terms) {
+            auto it2 = varMap.find(term.first);
+            if (it2 == varMap.end()) {
+                throw std::runtime_error("Unknown variable in constraint: " + term.first);
+            }
+            lhs += term.second * it2->second;
+        }
+        solver.AddConstraint(lhs, cd.sense, cd.rhs, cd.name);
+    }
+
+    solver.Update();
+
+    bool ok = solver.Solve();
+    if (!ok) {
         std::cerr << "DirectSolver: no optimal solution found." << std::endl;
         return ERROR;
     }
 
     std::cout << "===== DirectSolver optimal solution =====" << std::endl;
-    std::cout << "Objective value: " << solver->GetObjectiveValue() << std::endl;
-    strategy->PrintSolution(*solver, *problemData);
+    std::cout << "Objective value: " << solver.GetObjectiveValue() << std::endl;
 
+    // Collect solution values in variable-declaration order.
+    std::vector<double> varValues;
+    varValues.reserve(model.variables.size());
+    for (const auto& vd : model.variables) {
+        varValues.push_back(varMap[vd.name].get(GRB_DoubleAttr_X));
+    }
+
+    formulator->PrintSolution(model, varValues);
     return OK;
 }
 
@@ -74,5 +106,7 @@ Status DirectSolver::Run()
     if (status != OK) {
         return status;
     }
-    return Solve();
+    MILPModel model = formulator->Formulate();
+    return Solve(model);
 }
+

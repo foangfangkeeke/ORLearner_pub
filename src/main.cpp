@@ -113,7 +113,12 @@ int main(int argc, char* argv[]) {
         } else {
             solver.SetAlgorithm(std::make_unique<UsingSolver>(problemType));
         }
-        solver.Run();
+        try {
+            solver.Run();
+        }
+        catch (const std::exception& e) {
+            cout << "Error: " << e.what() << endl;
+        }
     }
 
     return 0;

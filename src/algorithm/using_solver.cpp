@@ -11,9 +11,9 @@
 #include <cmath>
 #include <map>
 
-static const std::map<ProblemType, std::function<std::unique_ptr<ISolverDataInitializationStrategy>()>> dataInitMap = {
-    {TEST, [](){return std::make_unique<TestDataInitializationStrategy>();}}
-    // {CUTTINGSTOCK, [](){return std::make_unique<CuttingStockDataInitializationStrategy>();}},
+static const std::map<ProblemType, std::function<std::unique_ptr<IDataInitializationStrategy_Solver>()>> dataInitMap = {
+    {TEST, [](){return std::make_unique<TestDataInitializationStrategy_Solver>();}},
+    {CUTTINGSTOCK, [](){return std::make_unique<CuttingStockDataInitializationStrategy_Solver>();}}
 };
 
 Status UsingSolver::Initialize()

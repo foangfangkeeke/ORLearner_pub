@@ -10,12 +10,12 @@
 #include <map>
 
 static const std::map<ProblemType,
-                      std::tuple<std::function<std::unique_ptr<IDataInitializationStrategy>()>,
+                      std::tuple<std::function<std::unique_ptr<IDataInitializationStrategy_CG>()>,
                                  std::function<std::unique_ptr<ISubProblemStrategy>()>>> strategyMap = {
     {
         CUTTINGSTOCK,
         std::make_tuple(
-            [](){return std::make_unique<CuttingStockDataInitializationStrategy>();},
+            [](){return std::make_unique<CuttingStockDataInitializationStrategy_CG>();},
             [](){return std::make_unique<CuttingStockSubProblemStrategy>();})
     }
 };

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "column_generation.hpp"
+#include "using_solver.hpp"
 
 class CuttingStockSubProblemStrategy : public ISubProblemStrategy {
 public:
@@ -11,8 +12,13 @@ public:
     bool CheckValid(const ProblemData& problemData, const PatternWithInfo& pwi) override;
 };
 
-class CuttingStockDataInitializationStrategy : public IDataInitializationStrategy {
+class CuttingStockDataInitializationStrategy_CG : public IDataInitializationStrategy_CG {
 public:
     void DataInit(ProblemData& problemData) override;
     std::vector<Constraint> ConstrInit(ProblemData& problemData) override;
+};
+
+class CuttingStockDataInitializationStrategy_Solver : public IDataInitializationStrategy_Solver {
+public:
+    void DataInit(ProblemData& problemData) override;
 };

@@ -1,4 +1,5 @@
 #include "cutting_stock_problem.hpp"
+#include "basic_solver.hpp"
 
 #include <iostream>
 #include <vector>
@@ -111,9 +112,9 @@ bool CuttingStockSubProblemStrategy::CheckValid(const ProblemData& problemData, 
     return length <= problemData.getData<int>("stockLength");
 }
 
-void CuttingStockDataInitializationStrategy::DataInit(ProblemData& problemData)
+void CuttingStockDataInitializationStrategy_CG::DataInit(ProblemData& problemData)
 {
-    int stockLength{};
+    int stockLength;
     std::vector<int> itemLengths;
     std::vector<int> demands;
 
@@ -135,7 +136,7 @@ void CuttingStockDataInitializationStrategy::DataInit(ProblemData& problemData)
     }
 }
 
-std::vector<Constraint> CuttingStockDataInitializationStrategy::ConstrInit(ProblemData& problemData)
+std::vector<Constraint> CuttingStockDataInitializationStrategy_CG::ConstrInit(ProblemData& problemData)
 {
     std::vector<Constraint> constrs;
     auto demands = problemData.getData<std::vector<int>>("demands");
@@ -144,4 +145,90 @@ std::vector<Constraint> CuttingStockDataInitializationStrategy::ConstrInit(Probl
     }
 
     return constrs;
+}
+
+std::vector<std::vector<int>> findAllCombinations(int stockLength, const std::vector<int>& itemLengths) {
+    std::vector<std::vector<int>> result;
+    std::vector<int> current;
+    current.resize(itemLengths.size(), 0);
+
+    auto backtrack = [&](auto&& self, int index, int remaining) {
+        if (index == itemLengths.size()) {
+            if (remaining >= 0) {
+                result.push_back(current);
+            }
+            return;
+        }
+
+        int itemLen = itemLengths[index];
+        int maxCount = remaining / itemLen;
+
+        for (int count = 0; count <= maxCount; ++count) {
+            current[index] = count;
+            self(self, index + 1, remaining - count * itemLen);
+        }
+    };
+
+    backtrack(backtrack, 0, stockLength);
+    return result;
+}
+
+void CuttingStockDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
+{
+    int stockLength;
+    std::vector<int> itemLengths;
+    std::vector<int> demands;
+
+    if (!LoadCuttingStockData(stockLength, itemLengths, demands)) {
+        throw std::runtime_error("Failed to load cutting stock data from file.");
+    }
+
+    std::cout << "Loaded cutting stock data from file." << std::endl;
+
+    auto allPatterns = findAllCombinations(stockLength, itemLengths);
+    std::cout << "Generated " << allPatterns.size() << " cutting patterns." << std::endl;
+
+    std::vector<ProblemDataVar> vars;
+    std::vector<ProblemDataConstr> constrs;
+    int obj;
+
+    for (size_t i = 0; i < allPatterns.size(); ++i) {
+        ProblemDataVar var;
+        var.lb = 0;
+        var.ub = GRB_INFINITY;
+        var.obj = 1;
+        var.type = 'I';
+        std::ostringstream oss;
+        oss << "x";
+        for (size_t j = 0; j < allPatterns[i].size(); ++j) {
+            oss << "_" << allPatterns[i][j];
+            std::cout << allPatterns[i][j] << " ";
+        }
+        std::cout << std::endl;
+        var.name = oss.str();
+        vars.push_back(var);
+    }
+
+    for (size_t i = 0; i < demands.size(); ++i) {
+        ProblemDataConstr constr;
+        for (size_t j = 0; j < allPatterns.size(); ++j) {
+            constr.coeffs.push_back(allPatterns[j][i]);
+        }
+        constr.sense = '>';
+        constr.rhs = demands[i];
+        constr.name = "demand_" + std::to_string(i);
+        constrs.push_back(constr);
+    }
+
+    problemData.addData("vars", vars);
+    problemData.addData("constrs", constrs);
+    problemData.addData("obj", obj);
+
+
+    std::cout << "stockLength=" << stockLength << std::endl;
+    std::cout << "demands:" << std::endl;
+
+    for (size_t i = 0; i < itemLengths.size(); ++i) {
+        std::cout << "  Length " << itemLengths[i] << ": " << demands[i] << std::endl;
+    }
 }

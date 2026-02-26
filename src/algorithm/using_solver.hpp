@@ -10,10 +10,10 @@
 #include <stdexcept>
 #include <iostream>
 
-class ISolverDataInitializationStrategy {
+class IDataInitializationStrategy_Solver {
 public:
     virtual void DataInit(ProblemData& data) = 0;
-    virtual ~ISolverDataInitializationStrategy() = default;
+    virtual ~IDataInitializationStrategy_Solver() = default;
 };
 
 class UsingSolver final : public IMILPAlgorithmStrategy {
@@ -29,7 +29,7 @@ private:
     std::unique_ptr<GRBEnv> env;
     std::unique_ptr<GRBModel> model;
     std::unique_ptr<ProblemData> problemData;
-    std::unique_ptr<ISolverDataInitializationStrategy> dataIniter;
+    std::unique_ptr<IDataInitializationStrategy_Solver> dataIniter;
     bool initialized = false;
 
     GRBLinExpr obj = 0;

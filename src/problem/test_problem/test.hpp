@@ -2,7 +2,7 @@
 
 #include "using_solver.hpp"
 
-class TestDataInitializationStrategy : public ISolverDataInitializationStrategy {
+class TestDataInitializationStrategy_Solver : public IDataInitializationStrategy_Solver {
 public:
-    void DataInit(ProblemData& data) override;
+    void DataInit(ProblemData& problemData) override;
 };

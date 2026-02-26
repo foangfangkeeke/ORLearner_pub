@@ -23,11 +23,11 @@ struct PatternWithInfo {
     }
 };
 
-class IDataInitializationStrategy {
+class IDataInitializationStrategy_CG {
 public:
     virtual void DataInit(ProblemData& data) = 0;
     virtual std::vector<Constraint> ConstrInit(ProblemData& problemData) = 0;
-    virtual ~IDataInitializationStrategy() = default;
+    virtual ~IDataInitializationStrategy_CG() = default;
 };
 
 class ISubProblemStrategy {
@@ -89,7 +89,7 @@ private:
     std::unique_ptr<GRBModel> model;
     std::unique_ptr<SubSolver> sub;
     std::unique_ptr<ProblemData> problemData;
-    std::unique_ptr<IDataInitializationStrategy> dataIniter;
+    std::unique_ptr<IDataInitializationStrategy_CG> dataIniter;
     bool initialized = false;
 
     GRBLinExpr obj = 0;

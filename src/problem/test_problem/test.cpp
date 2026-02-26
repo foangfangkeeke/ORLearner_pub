@@ -2,7 +2,6 @@
 #include <limits>
 
 #include "test.hpp"
-#include "milp_solver.hpp"
 #include "basic_solver.hpp"
 
 #include <fstream>
@@ -104,7 +103,7 @@ bool LoadTestData(vector<ProblemDataVar>& vars, vector<ProblemDataConstr>& const
 }
 } // namespace
 
-void TestDataInitializationStrategy::DataInit(ProblemData& data)
+void TestDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
 {
     vector<ProblemDataVar> vars;
     vector<ProblemDataConstr> constrs;
@@ -114,9 +113,9 @@ void TestDataInitializationStrategy::DataInit(ProblemData& data)
         throw std::runtime_error("Failed to load test data from file.");
     }
 
-    data.addData("vars", vars);
+    problemData.addData("vars", vars);
 
-    data.addData("constrs", constrs);
+    problemData.addData("constrs", constrs);
 
-    data.addData("obj", obj);
+    problemData.addData("obj", obj);
 }

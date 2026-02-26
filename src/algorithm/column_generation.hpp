@@ -77,7 +77,7 @@ class ColumnGeneration : public IMILPAlgorithmStrategy {
 public:
     ColumnGeneration(ProblemType problemType, int maxIters=100, double tol=1e-6);
     Status Initialize();
-    Status Run() override;
+    Status Solve();
     ~ColumnGeneration();
 
 private:
@@ -95,7 +95,6 @@ private:
     GRBLinExpr obj = 0;
 
     void UpdateMP();
-    Status Solve();
 
     void AddPattern(const std::vector<int>& pattern, GRBVar var);
 };

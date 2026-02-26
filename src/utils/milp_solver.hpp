@@ -10,7 +10,10 @@
 class IMILPAlgorithmStrategy {
 public:
     virtual ~IMILPAlgorithmStrategy() = default;
-    virtual Status Run() = 0;
+    virtual Status Initialize() = 0;
+    virtual Status Solve() = 0;
+
+    bool initialized = false;
 };
 
 class MILPSolver {
@@ -20,7 +23,14 @@ public:
     }
 
     Status Run() {
-        return algorithm->Run();
+        if (!algorithm->initialized) {
+            Status status = algorithm->Initialize();
+            if (status) {
+                return status;
+            }
+        }
+
+        return algorithm->Solve();
     }
 
 private:

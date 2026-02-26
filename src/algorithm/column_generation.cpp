@@ -238,18 +238,6 @@ Status ColumnGeneration::Solve()
     return OK;
 }
 
-Status ColumnGeneration::Run()
-{
-    if (!initialized) {
-        Status status = Initialize();
-        if (status) {
-            return status;
-        }
-    }
-
-    return Solve();
-}
-
 ColumnGeneration::ColumnGeneration(ProblemType problemType, int maxIters, double tol): problemType(problemType), maxIters(maxIters), tolerance(tol)
 {
     std::cout << "===== build CG =====" << std::endl;

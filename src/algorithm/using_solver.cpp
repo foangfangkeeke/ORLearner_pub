@@ -73,18 +73,6 @@ Status UsingSolver::Solve()
     return OK;
 }
 
-Status UsingSolver::Run()
-{
-    if (!initialized) {
-        Status status = Initialize();
-        if (status) {
-            return status;
-        }
-    }
-
-    return Solve();
-}
-
 UsingSolver::UsingSolver(ProblemType problemType): problemType(problemType)
 {
     std::cout << "===== build UsingSolver =====" << std::endl;

@@ -20,7 +20,7 @@ class UsingSolver final : public IMILPAlgorithmStrategy {
 public:
     UsingSolver(ProblemType problemType);
     Status Initialize();
-    Status Run() override;
+    Status Solve();
     ~UsingSolver();
 
 private:
@@ -34,5 +34,4 @@ private:
 
     GRBLinExpr obj = 0;
 
-    Status Solve();
 };

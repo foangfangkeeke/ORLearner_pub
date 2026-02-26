@@ -1,5 +1,6 @@
-#include "test.hpp"
-#include "cutting_stock_problem.hpp"
+#include "using_solver.hpp"
+#include "column_generation.hpp"
+#include "branch_and_price.hpp"
 
 #include <iostream>
 #include <fstream>
@@ -108,8 +109,10 @@ int main(int argc, char* argv[]) {
 
         MILPSolver solver;
 
-        if (algLower == "cg") {
+        if (algLower == "cg") { // TODO: 直接算法名传进去更好
             solver.SetAlgorithm(std::make_unique<ColumnGeneration>(problemType));
+        } else if (algLower == "bp") {
+            solver.SetAlgorithm(std::make_unique<BranchAndPrice>(problemType));
         } else {
             solver.SetAlgorithm(std::make_unique<UsingSolver>(problemType));
         }

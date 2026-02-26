@@ -73,12 +73,6 @@ Status UsingSolver::Solve()
     return OK;
 }
 
-UsingSolver::UsingSolver(ProblemType problemType): problemType(problemType)
-{
-    std::cout << "===== build UsingSolver =====" << std::endl;
-};
+UsingSolver::UsingSolver(ProblemType problemType): problemType(problemType) {};
 
-UsingSolver::~UsingSolver()
-{
-    std::cout << "===== destroy UsingSolver =====" << std::endl;
-};
+UsingSolver::~UsingSolver() {};

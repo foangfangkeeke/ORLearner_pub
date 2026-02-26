@@ -127,8 +127,6 @@ Status BranchAndPrice::ProcessNode(std::shared_ptr<BranchNode> node) {
 
 
 Status BranchAndPrice::Solve() {
-    std::cout << "===== start Branch and Price =====" << std::endl;
-
     while (!nodeQueue.empty()) {
         auto currentNode = nodeQueue.front();
         nodeQueue.pop();
@@ -142,22 +140,11 @@ Status BranchAndPrice::Solve() {
         }
     }
 
-    std::cout << "===== Branch and Price finished =====" << std::endl;
     std::cout << "Global upper bound (integer obj): " << globalUpperBound << std::endl;
-    std::cout << "Integer solution: " << std::endl;
-    for (const auto& [varIdx, val] : integerSolution) {
-        std::cout << "x_" << varIdx << " = " << val << std::endl;
-    }
 
     return OK;
 }
 
-BranchAndPrice::BranchAndPrice(ProblemType problemType): problemType(problemType)
-{
-    std::cout << "===== build BranchAndPrice =====" << std::endl;
-};
+BranchAndPrice::BranchAndPrice(ProblemType problemType): problemType(problemType) {};
 
-BranchAndPrice::~BranchAndPrice()
-{
-    std::cout << "===== destroy BranchAndPrice =====" << std::endl;
-};
+BranchAndPrice::~BranchAndPrice() {};

@@ -103,12 +103,9 @@ SubSolver::SubSolver(std::unique_ptr<ISubProblemStrategy> strategy) : strategy(s
     if (!this->strategy) {
         throw std::invalid_argument("Strategy cannot be null");
     }
-    std::cout << "===== build SubSolver =====" << std::endl;
 }
 
-SubSolver::~SubSolver() {
-    std::cout << "===== destroy SubSolver =====" << std::endl;
-}
+SubSolver::~SubSolver() {};
 
 std::vector<PatternWithInfo> SubSolver::GetPatternWithInfos() const
 {
@@ -150,7 +147,6 @@ void ColumnGeneration::AddPattern(const std::vector<int>& pattern, GRBVar var) {
 
 Status ColumnGeneration::Initialize()
 {
-    std::cout << "===== init CG =====" << std::endl;
     std::cout << "problemType=" << problemType << std::endl;
     std::cout << "maxIters=" << maxIters << std::endl;
     std::cout << "tolerance=" << tolerance << std::endl;
@@ -186,8 +182,6 @@ Status ColumnGeneration::Initialize()
 
 void ColumnGeneration::UpdateMP()
 {
-    std::cout << "===== start UpdatePatterns =====" << std::endl;
-
     std::vector<PatternWithInfo> newPatterns;
     sub->GetNewPatternWithInfos(newPatterns);
 
@@ -205,22 +199,13 @@ void ColumnGeneration::UpdateMP()
 
 Status ColumnGeneration::Solve()
 {
-    std::cout << "===== start CG =====" << std::endl;
     int iter = 0;
 
     while (iter <= maxIters) {
-        std::cout << "===== CG iter " << iter << " =====" << std::endl;
-
         UpdateMP();
         model->optimize(); // RLMP
         int solveStatus = model->get(GRB_IntAttr_Status);
         if (solveStatus == GRB_OPTIMAL || (solveStatus == GRB_TIME_LIMIT && model->get(GRB_IntAttr_SolCount)>0)) {
-            size_t numVars = model->get(GRB_IntAttr_NumVars);
-            auto vars = model->getVars();
-            for (size_t i = 0; i < numVars; ++i) {
-                GRBVar var = vars[i];
-                std::cout << var.get(GRB_StringAttr_VarName) << ": " << var.get(GRB_DoubleAttr_X) << std::endl;
-            }
             std::cout << "Current objective: " << model->get(GRB_DoubleAttr_ObjVal) << std::endl;
         } else {
             std::cerr << "MP not solved to optimality, status: " << solveStatus << std::endl;
@@ -235,6 +220,12 @@ Status ColumnGeneration::Solve()
 
         bool needUpdate = sub->FindNewPatterns(*problemData, duals);
         if (!needUpdate) {
+            // size_t numVars = model->get(GRB_IntAttr_NumVars);
+            // auto vars = model->getVars();
+            // for (size_t i = 0; i < numVars; ++i) {
+            //     GRBVar var = vars[i];
+            //     std::cout << var.get(GRB_StringAttr_VarName) << ": " << var.get(GRB_DoubleAttr_X) << std::endl;
+            // }
             return OK;
         }
 
@@ -243,12 +234,6 @@ Status ColumnGeneration::Solve()
     return OK;
 }
 
-ColumnGeneration::ColumnGeneration(ProblemType problemType, int maxIters, double tol): problemType(problemType), maxIters(maxIters), tolerance(tol)
-{
-    std::cout << "===== build CG =====" << std::endl;
-};
+ColumnGeneration::ColumnGeneration(ProblemType problemType, int maxIters, double tol): problemType(problemType), maxIters(maxIters), tolerance(tol) {};
 
-ColumnGeneration::~ColumnGeneration()
-{
-    std::cout << "===== destroy CG =====" << std::endl;
-};
+ColumnGeneration::~ColumnGeneration() {};

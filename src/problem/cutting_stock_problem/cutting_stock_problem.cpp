@@ -74,7 +74,6 @@ void CuttingStockSubProblemStrategy::InitPatterns(const ProblemData& problemData
     paretoSet.clear();
 
     auto itemLengths = problemData.getData<std::vector<int>>("itemLengths");
-    std::cout<<"itemLengths: "<<std::endl;
     for (int i = 0; i < itemLengths.size(); i++) {
         PatternWithInfo term = {std::vector<int>(itemLengths.size()), 0, 0, 0};
         term.pattern[i] = 1;

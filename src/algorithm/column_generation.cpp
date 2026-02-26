@@ -1,5 +1,6 @@
 #include "column_generation.hpp"
 #include "cutting_stock_problem.hpp"
+#include "tools.hpp"
 
 #include <functional>
 #include <iostream>
@@ -193,9 +194,7 @@ void ColumnGeneration::UpdateMP()
     auto baseOffset = sub->GetPatternWithInfos().size()-newPatterns.size();
     std::cout << "newPatterns.size() in UpdatePatterns: " << newPatterns.size() << std::endl;
     for (size_t i = 0; i < newPatterns.size(); i++) {
-        PatternUtils::print(newPatterns[i].pattern);
-        auto var = model->addVar(newPatterns[i].lb, newPatterns[i].ub, newPatterns[i].coeff, GRB_CONTINUOUS, "x" + std::to_string(baseOffset + i));
-        std::cout << "x" + std::to_string(baseOffset + i) + ":[" << newPatterns[i].lb << ", " << newPatterns[i].ub << "], coef: " << newPatterns[i].coeff << std::endl;
+        GRBVar var = model->addVar(newPatterns[i].lb, newPatterns[i].ub, newPatterns[i].coeff, GRB_CONTINUOUS, "x" + PatternToString(newPatterns[i].pattern));
         AddPattern(newPatterns[i].pattern, var);
         obj = obj + newPatterns[i].coeff * var;
     }
@@ -216,6 +215,12 @@ Status ColumnGeneration::Solve()
         model->optimize(); // RLMP
         int solveStatus = model->get(GRB_IntAttr_Status);
         if (solveStatus == GRB_OPTIMAL || (solveStatus == GRB_TIME_LIMIT && model->get(GRB_IntAttr_SolCount)>0)) {
+            size_t numVars = model->get(GRB_IntAttr_NumVars);
+            auto vars = model->getVars();
+            for (size_t i = 0; i < numVars; ++i) {
+                GRBVar var = vars[i];
+                std::cout << var.get(GRB_StringAttr_VarName) << ": " << var.get(GRB_DoubleAttr_X) << std::endl;
+            }
             std::cout << "Current objective: " << model->get(GRB_DoubleAttr_ObjVal) << std::endl;
         } else {
             std::cerr << "MP not solved to optimality, status: " << solveStatus << std::endl;

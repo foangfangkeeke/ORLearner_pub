@@ -39,6 +39,7 @@ struct ProblemDataConstr
 class DataBase {
 public:
     virtual ~DataBase() = default;
+    virtual std::unique_ptr<DataBase> clone() const = 0;
 };
 
 template <typename T>
@@ -46,12 +47,22 @@ class DataWrapper : public DataBase {
 public:
     explicit DataWrapper(const T& data) : data_(data) {}
     const T& getData() const { return data_; }
+    std::unique_ptr<DataBase> clone() const override {
+        return std::make_unique<DataWrapper<T>>(data_);
+    }
 private:
     T data_;
 };
 
 class ProblemData {
 public:
+    ProblemData() = default;
+    ProblemData(const ProblemData& other) {
+        for (const auto& kv : other.dataMap_) {
+            dataMap_[kv.first] = kv.second->clone();
+        }
+    }
+
     template <typename T>
     void addData(const std::string& key, const T& value) {
         dataMap_[key] = std::make_unique<DataWrapper<T>>(value);

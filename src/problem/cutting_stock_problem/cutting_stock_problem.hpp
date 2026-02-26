@@ -10,6 +10,10 @@ public:
     int GetCurrentStatus(const ProblemData& problemData, Pattern pattern) override;
     PatternWithInfo ExpandPattern(const ProblemData& problemData, PatternWithInfo pwi, int idx) override;
     bool CheckValid(const ProblemData& problemData, const PatternWithInfo& pwi) override;
+
+    std::unique_ptr<ISubProblemStrategy> Clone() const override {
+        return std::make_unique<CuttingStockSubProblemStrategy>(*this);
+    }
 };
 
 class CuttingStockDataInitializationStrategy_CG : public IDataInitializationStrategy_CG {

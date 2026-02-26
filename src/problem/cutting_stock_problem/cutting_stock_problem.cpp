@@ -1,5 +1,6 @@
 #include "cutting_stock_problem.hpp"
 #include "basic_solver.hpp"
+#include "tools.hpp"
 
 #include <iostream>
 #include <vector>
@@ -198,13 +199,7 @@ void CuttingStockDataInitializationStrategy_Solver::DataInit(ProblemData& proble
         var.obj = 1;
         var.type = 'I';
         std::ostringstream oss;
-        oss << "x";
-        for (size_t j = 0; j < allPatterns[i].size(); ++j) {
-            oss << "_" << allPatterns[i][j];
-            std::cout << allPatterns[i][j] << " ";
-        }
-        std::cout << std::endl;
-        var.name = oss.str();
+        var.name = "x" + PatternToString(allPatterns[i]);
         vars.push_back(var);
     }
 

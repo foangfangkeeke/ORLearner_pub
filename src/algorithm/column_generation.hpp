@@ -38,6 +38,7 @@ public:
     virtual PatternWithInfo ExpandPattern(const ProblemData& problemData, PatternWithInfo pwi, int idx) = 0;
     virtual bool CheckValid(const ProblemData& problemData, const PatternWithInfo& pwi) = 0;
 
+    virtual std::unique_ptr<ISubProblemStrategy> Clone() const = 0;
     virtual ~ISubProblemStrategy() = default;
 };
 
@@ -53,6 +54,13 @@ public:
     bool CheckValid(const ProblemData& problemData, const PatternWithInfo& pwi);
 
     ~SubSolver();
+
+    SubSolver(const SubSolver& other) {
+        this->bfsQueue = other.bfsQueue;
+        this->processedPatterns = other.processedPatterns;
+        this->paretoSet = other.paretoSet;
+        this->strategy = other.strategy->Clone(); // 需给ISubProblemStrategy新增Clone接口
+    }
 
 private:
     std::queue<PatternWithInfo> bfsQueue;
@@ -78,7 +86,26 @@ public:
     ColumnGeneration(ProblemType problemType, int maxIters=100, double tol=1e-6);
     Status Initialize();
     Status Solve();
+    std::shared_ptr<GRBModel> GetModel() const { return model; }
     ~ColumnGeneration();
+
+    ColumnGeneration(const ColumnGeneration& other) {
+        this->problemType = other.problemType;
+        this->maxIters = other.maxIters;
+        this->tolerance = other.tolerance;
+        this->initialized = other.initialized;
+
+        this->env = std::make_unique<GRBEnv>(*other.env);
+        this->model = std::make_unique<GRBModel>(*other.model);
+        this->obj = GRBLinExpr(other.obj);
+        this->problemData = std::make_unique<ProblemData>(*other.problemData);
+
+        this->sub = std::make_unique<SubSolver>(*other.sub);
+    }
+
+    std::unique_ptr<ColumnGeneration> Clone() const {
+        return std::make_unique<ColumnGeneration>(*this);
+    }
 
 private:
     ProblemType problemType;
@@ -86,7 +113,7 @@ private:
     double tolerance;
 
     std::unique_ptr<GRBEnv> env;
-    std::unique_ptr<GRBModel> model;
+    std::shared_ptr<GRBModel> model;
     std::unique_ptr<SubSolver> sub;
     std::unique_ptr<ProblemData> problemData;
     std::unique_ptr<IDataInitializationStrategy_CG> dataIniter;

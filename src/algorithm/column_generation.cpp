@@ -209,6 +209,7 @@ Status ColumnGeneration::Solve()
             std::cout << "Current objective: " << model->get(GRB_DoubleAttr_ObjVal) << std::endl;
         } else {
             std::cerr << "MP not solved to optimality, status: " << solveStatus << std::endl;
+            Debug::OutputModel(model);
             return ERROR;
         }
 
@@ -220,12 +221,7 @@ Status ColumnGeneration::Solve()
 
         bool needUpdate = sub->FindNewPatterns(*problemData, duals);
         if (!needUpdate) {
-            // size_t numVars = model->get(GRB_IntAttr_NumVars);
-            // auto vars = model->getVars();
-            // for (size_t i = 0; i < numVars; ++i) {
-            //     GRBVar var = vars[i];
-            //     std::cout << var.get(GRB_StringAttr_VarName) << ": " << var.get(GRB_DoubleAttr_X) << std::endl;
-            // }
+            Debug::OutputResult(model);
             return OK;
         }
 

@@ -120,7 +120,7 @@ Status BranchAndPrice::ProcessNode(std::shared_ptr<BranchNode> node) {
 
     std::cout << "Node " << node->nodeId << " branched on var " << branchVarName 
               << " (val=" << branchVal << "), left/right nodes: " 
-              << leftNode->nodeId << "/" << rightNode->nodeId << std::endl;
+              << leftNode->nodeId << "/" << rightNode->nodeId << "\n" << std::endl;
 
     return OK;
 }

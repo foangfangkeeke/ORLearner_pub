@@ -141,7 +141,7 @@ std::vector<Constraint> CuttingStockDataInitializationStrategy_CG::ConstrInit(Pr
     std::vector<Constraint> constrs;
     auto demands = problemData.getData<std::vector<int>>("demands");
     for (size_t i = 0; i < demands.size(); ++i) {
-        constrs.push_back(std::make_tuple("demand" + std::to_string(i), demands[i], '>='));
+        constrs.push_back(std::make_tuple("demand" + std::to_string(i), demands[i], '>'));
     }
 
     return constrs;

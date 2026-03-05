@@ -1,7 +1,7 @@
 set(MAIN_SOURCES main.cpp)
-file(GLOB ALGORITHM_SOURCES algorithm/*.cpp)
-file(GLOB UTILS_SOURCES utils/*.cpp)
-file(GLOB_RECURSE PROBLEM_SOURCES problem/*.cpp)
+file(GLOB ALGORITHM_SOURCES CONFIGURE_DEPENDS algorithm/*.cpp)
+file(GLOB UTILS_SOURCES CONFIGURE_DEPENDS utils/*.cpp)
+file(GLOB_RECURSE PROBLEM_SOURCES CONFIGURE_DEPENDS problem/*.cpp)
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/algorithm

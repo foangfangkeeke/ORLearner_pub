@@ -15,10 +15,10 @@ struct BendersCutInfo {
 };
 
 struct BendersSubProblemContext {
-    std::vector<GRBVar> xVars;
-    std::vector<GRBConstr> supplyConstrs;
-    std::vector<GRBConstr> demandConstrs;
-    std::vector<GRBConstr> linkConstrs;
+    std::vector<GRBVar> dualUVars;
+    std::vector<GRBVar> dualVVars;
+    std::vector<GRBVar> dualWVars;
+    std::vector<GRBConstr> dualConstrs;
 };
 
 class IDataInitializationStrategy_Benders {

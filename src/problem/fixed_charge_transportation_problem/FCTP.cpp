@@ -313,57 +313,53 @@ std::vector<ProblemDataConstr> FCTPDataInitializationStrategy_Benders::ConstrIni
 
 void FCTPSubProblemStrategy_Benders::InitSubProblem(const ProblemData& problemData, GRBModel& subModel, BendersSubProblemContext& context)
 {
-    const auto& supplys = problemData.getData<std::vector<int>>("supplys");
-    const auto& demands = problemData.getData<std::vector<int>>("demands");
     const auto& transCosts = problemData.getData<std::vector<std::vector<int>>>("transCosts");
     int supplyCount = problemData.getData<int>("supplyCount");
     int demandCount = problemData.getData<int>("demandCount");
+    int arcCount = problemData.getData<int>("arcCount");
 
-    auto xIndex = [demandCount](int i, int j) {
+    auto yIndex = [demandCount](int i, int j) {
         return i * demandCount + j;
     };
 
-    context.xVars.clear();
-    context.supplyConstrs.clear();
-    context.demandConstrs.clear();
-    context.linkConstrs.clear();
+    context.dualUVars.clear();
+    context.dualVVars.clear();
+    context.dualWVars.clear();
+    context.dualConstrs.clear();
 
-    context.xVars.resize(static_cast<size_t>(supplyCount * demandCount));
-    GRBLinExpr obj = 0;
-    for (int i = 0; i < supplyCount; ++i) {
-        for (int j = 0; j < demandCount; ++j) {
-            int idx = xIndex(i, j);
-            context.xVars[idx] = subModel.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "x_" + to_string(i) + "_" + to_string(j));
-            obj += static_cast<double>(transCosts[i][j]) * context.xVars[idx];
-        }
-    }
+    context.dualUVars.reserve(supplyCount);
+    context.dualVVars.reserve(demandCount);
+    context.dualWVars.reserve(arcCount);
+    context.dualConstrs.reserve(arcCount);
+
+    subModel.set(GRB_IntParam_InfUnbdInfo, 1);
+    subModel.set(GRB_IntParam_DualReductions, 0);
 
     for (int i = 0; i < supplyCount; ++i) {
-        GRBLinExpr lhs = 0;
-        for (int j = 0; j < demandCount; ++j) {
-            lhs += context.xVars[xIndex(i, j)];
-        }
-        context.supplyConstrs.push_back(subModel.addConstr(lhs, '<', static_cast<double>(supplys[i]), "sub_supply_" + to_string(i)));
+        context.dualUVars.push_back(
+            subModel.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "u_" + to_string(i)));
     }
-
     for (int j = 0; j < demandCount; ++j) {
-        GRBLinExpr lhs = 0;
-        for (int i = 0; i < supplyCount; ++i) {
-            lhs += context.xVars[xIndex(i, j)];
-        }
-        context.demandConstrs.push_back(subModel.addConstr(lhs, '>', static_cast<double>(demands[j]), "sub_demand_" + to_string(j)));
+        context.dualVVars.push_back(
+            subModel.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "v_" + to_string(j)));
     }
-
-    // unfinished constraints, the rhs will be updated in UpdateSubProblem
     for (int i = 0; i < supplyCount; ++i) {
         for (int j = 0; j < demandCount; ++j) {
-            int idx = xIndex(i, j);
-            GRBLinExpr lhs = context.xVars[idx];
-            context.linkConstrs.push_back(subModel.addConstr(lhs, '<', 0.0, "sub_link_" + to_string(i) + "_" + to_string(j)));
+            context.dualWVars.push_back(
+                subModel.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "w_" + to_string(i) + "_" + to_string(j)));
         }
     }
 
-    subModel.setObjective(obj, GRB_MINIMIZE);
+    for (int i = 0; i < supplyCount; ++i) {
+        for (int j = 0; j < demandCount; ++j) {
+            int idx = yIndex(i, j);
+            GRBLinExpr lhs = -context.dualUVars[i] + context.dualVVars[j] - context.dualWVars[idx];
+            context.dualConstrs.push_back(
+                subModel.addConstr(lhs, '<', static_cast<double>(transCosts[i][j]), "dual_cap_" + to_string(i) + "_" + to_string(j)));
+        }
+    }
+
+    subModel.setObjective(GRBLinExpr(0.0), GRB_MAXIMIZE);
     subModel.update();
 }
 
@@ -373,6 +369,8 @@ void FCTPSubProblemStrategy_Benders::UpdateSubProblem(
     BendersSubProblemContext& context,
     const std::vector<double>& yValues)
 {
+    const auto& supplys = problemData.getData<std::vector<int>>("supplys");
+    const auto& demands = problemData.getData<std::vector<int>>("demands");
     const auto& capacities = problemData.getData<std::vector<std::vector<int>>>("capacities");
     int supplyCount = problemData.getData<int>("supplyCount");
     int demandCount = problemData.getData<int>("demandCount");
@@ -381,14 +379,21 @@ void FCTPSubProblemStrategy_Benders::UpdateSubProblem(
         return i * demandCount + j;
     };
 
+    GRBLinExpr dualObj = 0;
+    for (int i = 0; i < supplyCount; ++i) {
+        dualObj += -static_cast<double>(supplys[i]) * context.dualUVars[i];
+    }
+    for (int j = 0; j < demandCount; ++j) {
+        dualObj += static_cast<double>(demands[j]) * context.dualVVars[j];
+    }
     for (int i = 0; i < supplyCount; ++i) {
         for (int j = 0; j < demandCount; ++j) {
             int idx = yIndex(i, j);
-            double rhs = static_cast<double>(capacities[i][j]) * yValues[idx];
-            context.linkConstrs[idx].set(GRB_DoubleAttr_RHS, rhs);
+            dualObj += -static_cast<double>(capacities[i][j]) * yValues[idx] * context.dualWVars[idx];
         }
     }
 
+    subModel.setObjective(dualObj, GRB_MAXIMIZE);
     subModel.update();
 }
 
@@ -413,7 +418,7 @@ Status FCTPSubProblemStrategy_Benders::SolveSubProblem(
 
     subModel.optimize();
     int status = subModel.get(GRB_IntAttr_Status);
-    if (status == GRB_OPTIMAL) { // add optimality cut
+    if (status == GRB_OPTIMAL) {
         cutInfo.isOptimalityCut = true;
         cutInfo.sense = '>';
         cutInfo.constant = 0.0;
@@ -421,18 +426,18 @@ Status FCTPSubProblemStrategy_Benders::SolveSubProblem(
         cutInfo.yCoeffs.assign(arcCount, 0.0);
 
         for (int i = 0; i < supplyCount; ++i) {
-            double pi = context.supplyConstrs[i].get(GRB_DoubleAttr_Pi);
-            cutInfo.constant += static_cast<double>(supplys[i]) * pi;
+            double uVal = context.dualUVars[i].get(GRB_DoubleAttr_X);
+            cutInfo.constant += -static_cast<double>(supplys[i]) * uVal;
         }
         for (int j = 0; j < demandCount; ++j) {
-            double pi = context.demandConstrs[j].get(GRB_DoubleAttr_Pi);
-            cutInfo.constant += static_cast<double>(demands[j]) * pi;
+            double vVal = context.dualVVars[j].get(GRB_DoubleAttr_X);
+            cutInfo.constant += static_cast<double>(demands[j]) * vVal;
         }
         for (int i = 0; i < supplyCount; ++i) {
             for (int j = 0; j < demandCount; ++j) {
                 int idx = yIndex(i, j);
-                double pi = context.linkConstrs[idx].get(GRB_DoubleAttr_Pi);
-                cutInfo.yCoeffs[idx] = static_cast<double>(capacities[i][j]) * pi;
+                double wVal = context.dualWVars[idx].get(GRB_DoubleAttr_X);
+                cutInfo.yCoeffs[idx] = -static_cast<double>(capacities[i][j]) * wVal;
             }
         }
 
@@ -440,104 +445,30 @@ Status FCTPSubProblemStrategy_Benders::SolveSubProblem(
         return OK;
     }
 
-    if (status == GRB_INFEASIBLE) { // add feasibility cut
-        GRBEnv dualEnv(true);
-        dualEnv.set(GRB_IntParam_OutputFlag, 0);
-        dualEnv.start();
-        GRBModel dualModel(dualEnv);
-        dualModel.set(GRB_IntParam_InfUnbdInfo, 1);
-        dualModel.set(GRB_IntParam_DualReductions, 0);
-
-        std::vector<GRBVar> uVars;
-        std::vector<GRBVar> vVars;
-        std::vector<GRBVar> wVars;
-        uVars.reserve(supplyCount);
-        vVars.reserve(demandCount);
-        wVars.reserve(arcCount);
-
-        for (int i = 0; i < supplyCount; ++i) {
-            uVars.push_back(dualModel.addVar(-GRB_INFINITY, 0.0, 0.0, GRB_CONTINUOUS, "u_" + to_string(i)));
-        }
-        for (int j = 0; j < demandCount; ++j) {
-            vVars.push_back(dualModel.addVar(-GRB_INFINITY, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "v_" + to_string(j)));
-        }
-        for (int i = 0; i < supplyCount; ++i) {
-            for (int j = 0; j < demandCount; ++j) {
-                wVars.push_back(dualModel.addVar(-GRB_INFINITY, 0.0, 0.0, GRB_CONTINUOUS,
-                    "w_" + to_string(i) + "_" + to_string(j)));
-            }
-        }
-
-        for (int i = 0; i < supplyCount; ++i) {
-            for (int j = 0; j < demandCount; ++j) {
-                int idx = yIndex(i, j);
-                GRBLinExpr lhs = uVars[i] + vVars[j] + wVars[idx];
-                dualModel.addConstr(lhs, '<', static_cast<double>(problemData.getData<std::vector<std::vector<int>>>("transCosts")[i][j]),
-                    "dual_cap_" + to_string(i) + "_" + to_string(j));
-            }
-        }
-
-        GRBLinExpr dualObj = 0;
-        for (int i = 0; i < supplyCount; ++i) {
-            dualObj += static_cast<double>(supplys[i]) * uVars[i];
-        }
-        for (int j = 0; j < demandCount; ++j) {
-            dualObj += static_cast<double>(demands[j]) * vVars[j];
-        }
-        for (int i = 0; i < supplyCount; ++i) {
-            for (int j = 0; j < demandCount; ++j) {
-                int idx = yIndex(i, j);
-                dualObj += static_cast<double>(capacities[i][j]) * yValues[idx] * wVars[idx];
-            }
-        }
-
-        dualModel.setObjective(dualObj, GRB_MAXIMIZE);
-        dualModel.optimize();
-
-        int dualStatus = dualModel.get(GRB_IntAttr_Status);
-        if (dualStatus == GRB_UNBOUNDED) {
-            cutInfo.isOptimalityCut = false;
-            cutInfo.sense = '<';
-            cutInfo.yCoeffs.assign(arcCount, 0.0);
-
-            double constant = 0.0;
-            for (int i = 0; i < supplyCount; ++i) {
-                double ray = uVars[i].get(GRB_DoubleAttr_UnbdRay);
-                constant += static_cast<double>(supplys[i]) * ray;
-            }
-            for (int j = 0; j < demandCount; ++j) {
-                double ray = vVars[j].get(GRB_DoubleAttr_UnbdRay);
-                constant += static_cast<double>(demands[j]) * ray;
-            }
-            for (int i = 0; i < supplyCount; ++i) {
-                for (int j = 0; j < demandCount; ++j) {
-                    int idx = yIndex(i, j);
-                    double ray = wVars[idx].get(GRB_DoubleAttr_UnbdRay);
-                    cutInfo.yCoeffs[idx] = static_cast<double>(capacities[i][j]) * ray;
-                }
-            }
-
-            cutInfo.constant = 0.0;
-            cutInfo.rhs = -constant;
-            subObj = std::numeric_limits<double>::infinity();
-            return OK;
-        }
-
+    if (status == GRB_UNBOUNDED) {
         cutInfo.isOptimalityCut = false;
-        cutInfo.sense = '>';
+        cutInfo.sense = '<';
         cutInfo.constant = 0.0;
         cutInfo.yCoeffs.assign(arcCount, 0.0);
-        int oneCount = 0;
-        for (int idx = 0; idx < arcCount; ++idx) {
-            if (yValues[idx] > 0.5) {
-                cutInfo.yCoeffs[idx] = -1.0;
-                ++oneCount;
-            }
-            else {
-                cutInfo.yCoeffs[idx] = 1.0;
+
+        double rayConstant = 0.0;
+        for (int i = 0; i < supplyCount; ++i) {
+            double ray = context.dualUVars[i].get(GRB_DoubleAttr_UnbdRay);
+            rayConstant += -static_cast<double>(supplys[i]) * ray;
+        }
+        for (int j = 0; j < demandCount; ++j) {
+            double ray = context.dualVVars[j].get(GRB_DoubleAttr_UnbdRay);
+            rayConstant += static_cast<double>(demands[j]) * ray;
+        }
+        for (int i = 0; i < supplyCount; ++i) {
+            for (int j = 0; j < demandCount; ++j) {
+                int idx = yIndex(i, j);
+                double ray = context.dualWVars[idx].get(GRB_DoubleAttr_UnbdRay);
+                cutInfo.yCoeffs[idx] = -static_cast<double>(capacities[i][j]) * ray;
             }
         }
-        cutInfo.rhs = 1.0 - static_cast<double>(oneCount);
+
+        cutInfo.rhs = -rayConstant;
         subObj = std::numeric_limits<double>::infinity();
         return OK;
     }

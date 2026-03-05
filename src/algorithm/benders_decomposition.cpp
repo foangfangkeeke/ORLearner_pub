@@ -45,7 +45,7 @@ Status BendersSubSolver::Solve(
     double& subObj)
 {
     strategy->UpdateSubProblem(problemData, *model, context, yValues);
-    return strategy->SolveSubProblem(problemData, *model, context, yValues, cutInfo, subObj);
+    return strategy->SolveSubProblem(problemData, *model, context, yValues, cutInfo, subObj); // TODO: warmup
 }
 
 BendersSubSolver::~BendersSubSolver() {}
@@ -142,21 +142,21 @@ Status BendersDecomposition::Solve()
 
         bool cutAdded = false;
         if (cutInfo.isOptimalityCut) {
-            GRBLinExpr rhsExpr = cutInfo.constant;
-            double rhsCurrent = cutInfo.constant;
+            GRBLinExpr lhsExpr = cutInfo.constant; // The parts of the cut that are not related to y.
+            double lhsCurrent = cutInfo.constant;
             for (size_t i = 0; i < yVars.size(); ++i) {
-                rhsExpr += cutInfo.yCoeffs[i] * yVars[i];
-                rhsCurrent += cutInfo.yCoeffs[i] * yValues[i];
+                lhsExpr += cutInfo.yCoeffs[i] * yVars[i];
+                lhsCurrent += cutInfo.yCoeffs[i] * yValues[i];
             }
 
             bestUpperBound = std::min(bestUpperBound, fixedCost + subObj);
 
-            if (thetaValue + tolerance < rhsCurrent) {
-                model->addConstr(theta >= rhsExpr, "opt_cut_" + std::to_string(iter));
+            if (thetaValue + tolerance < lhsCurrent) {
+                model->addConstr(lhsExpr <= theta, "opt_cut_" + std::to_string(iter));
                 cutAdded = true;
             }
         }
-        else {
+        else { // feasibility cut
             GRBLinExpr lhsExpr = 0;
             double lhsCurrent = 0.0;
             for (size_t i = 0; i < yVars.size(); ++i) {
@@ -170,7 +170,7 @@ Status BendersDecomposition::Solve()
                     cutAdded = true;
                 }
             }
-            else if (cutInfo.sense == '<') {
+            else if (cutInfo.sense == '<') { // rhs = constant at right side
                 if (lhsCurrent - tolerance > cutInfo.rhs) {
                     model->addConstr(lhsExpr <= cutInfo.rhs, "feas_cut_" + std::to_string(iter));
                     cutAdded = true;
@@ -198,16 +198,6 @@ Status BendersDecomposition::Solve()
         }
 
         model->update();
-
-        if (std::isfinite(bestUpperBound)) {
-            double denom = std::max(1.0, std::fabs(bestUpperBound));
-            double relGap = (bestUpperBound - bestLowerBound) / denom;
-            if (relGap <= tolerance) {
-                Debug::OutputResult(model);
-                std::cout << "Benders converged by gap." << std::endl;
-                return OK;
-            }
-        }
 
         ++iter;
     }

@@ -25,7 +25,8 @@ set_target_properties(main PROPERTIES
 )
 
 target_link_libraries(main PRIVATE
-    ${GUROBI_CXX_LIB}
+    $<$<CONFIG:Debug>:${GUROBI_CXX_LIB_DEBUG}>
+    $<$<NOT:$<CONFIG:Debug>>:${GUROBI_CXX_LIB_RELEASE}>
     ${GUROBI_CORE_LIB}
     ws2_32.lib
 )

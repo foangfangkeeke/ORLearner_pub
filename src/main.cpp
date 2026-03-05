@@ -85,7 +85,7 @@ int main(int argc, char* argv[]) {
 
         string coreText = "使用 " + alg + " 求解 " + pb + "_" + descVal;
         int totalWidth = 80;
-        int InfoWidth = coreText.size();
+        int InfoWidth = static_cast<int>(coreText.size());
         int padding = max(0, (totalWidth - InfoWidth) / 2);
         cout << "\n" << string(totalWidth, '=') << endl;
         cout << string(padding, ' ') << coreText;

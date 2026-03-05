@@ -11,6 +11,7 @@ typedef std::tuple<std::string, double, char> Constraint;
 enum ProblemType {
     TEST,
     CUTTINGSTOCK,
+    FCTP,
     DEFAULT = 0x100,
 };
 

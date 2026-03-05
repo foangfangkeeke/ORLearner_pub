@@ -16,8 +16,8 @@ using namespace std;
 
 int main(int argc, char* argv[]) {
 #ifdef _WIN32
-    SetConsoleOutputCP(936);
-    SetConsoleCP(936);
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
 #endif
 
     cout << fixed << setprecision(6);
@@ -98,6 +98,8 @@ int main(int argc, char* argv[]) {
             problemType = CUTTINGSTOCK;
         } else if (pbLower == "test") {
             problemType = TEST;
+        } else if (pbLower == "fctp" || pbLower == "fixedchargetransportation" || pbLower == "fixed_charge_transportation") {
+            problemType = FCTP;
         } else {
             err = true;
         }

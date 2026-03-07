@@ -1,0 +1,11 @@
+# numVar
+2
+# lb,ub, obj, type
+0, 10, 1.0, GRB_INTEGER
+0, inf, 2.0, GRB_CONTINUOUS
+# numConstr
+1
+# constr: lhs, sense, rhs
+1.0, 1.0, =, 5.0
+# obj
+max

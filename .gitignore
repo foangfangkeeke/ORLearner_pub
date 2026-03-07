@@ -2,5 +2,5 @@
 \.vscode
 \.vs
 \out
-*.txt
+*log*
 Notes/*.pdf

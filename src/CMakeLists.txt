@@ -10,6 +10,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/problem/cutting_stock_problem
     ${CMAKE_CURRENT_SOURCE_DIR}/problem/test_problem
     ${CMAKE_CURRENT_SOURCE_DIR}/problem/fixed_charge_transportation_problem
+    ${CMAKE_CURRENT_SOURCE_DIR}/problem/BARP
     ${GUROBI_INCLUDE_DIR}
 )
 

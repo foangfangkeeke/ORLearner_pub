@@ -1,5 +1,6 @@
 #include "cutting_stock_problem.hpp"
 #include "FCTP.hpp"
+#include "BARP_S.hpp"
 #include "using_solver.hpp"
 #include "test.hpp"
 #include "basic_solver.hpp"
@@ -15,7 +16,8 @@
 static const std::map<ProblemType, std::function<std::unique_ptr<IDataInitializationStrategy_Solver>()>> dataInitMap = {
     {TEST, [](){return std::make_unique<TestDataInitializationStrategy_Solver>();}},
     {CUTTINGSTOCK, [](){return std::make_unique<CuttingStockDataInitializationStrategy_Solver>();}},
-    {FCTP, [](){return std::make_unique<FCTPDataInitializationStrategy_Solver>();}}
+    {FCTP, [](){return std::make_unique<FCTPDataInitializationStrategy_Solver>();}},
+    {BARP_S, [](){return std::make_unique<BRSDataInitializationStrategy_Solver>();}}
 };
 
 Status UsingSolver::Initialize()

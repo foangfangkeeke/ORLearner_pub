@@ -101,6 +101,8 @@ int main(int argc, char* argv[]) {
             problemType = TEST;
         } else if (pbLower == "fctp" || pbLower == "fixedchargetransportation" || pbLower == "fixed_charge_transportation") {
             problemType = FCTP;
+        } else if (pbLower == "barp_s" || pbLower == "barp" || pbLower == "barps" || pbLower == "brs_allocation_and_rescheduling_train_timetables") {
+            problemType = BARP_S;
         } else {
             err = true;
         }

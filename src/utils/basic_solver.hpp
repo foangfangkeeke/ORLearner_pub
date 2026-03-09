@@ -12,6 +12,7 @@ enum ProblemType {
     TEST,
     CUTTINGSTOCK,
     FCTP,
+    BARP_S,
     DEFAULT = 0x100,
 };
 

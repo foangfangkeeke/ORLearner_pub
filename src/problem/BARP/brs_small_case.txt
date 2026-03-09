@@ -1,0 +1,40 @@
+# BARP-S small case for a longer one-way route.
+# Stations are indexed along one direction: 0 -> 1 -> ... -> 7.
+# All keys are case-insensitive.
+
+station_count = 8
+time_horizon = 12
+
+# travel_times defines directed arcs i -> i+1.
+travel_times = 2,2,2,3,2,2,2
+
+# Number of existing trains at t=0 for each station.
+existing_trains = 1,0,0,0,1,0,0,0
+
+# Whether station has a storage line that can host one BRS (0/1).
+# Terminal stations 0 and 7 are disabled.
+storage_flags = 0,1,1,1,1,1,1,0
+
+# Cost of allocating a BRS to each station (used only when storage_flag=1).
+brs_costs = 50,8,10,12,12,10,8,50
+budget = 3
+lambda_cost = 1.0
+
+# Capacity is intentionally tight so capacity constraints are active.
+train_capacity = 16
+min_headway = 1
+
+scenario_count = 3
+scenario_probabilities = 0.30,0.25,0.45
+
+# B_i^w: origin passenger demand at t=0 for each station i.
+# Terminal station i=7 keeps zero origin demand.
+scenario_b_0 = 14,10,8,6,7,6,5,0
+scenario_b_1 = 12,11,9,6,8,7,5,0
+scenario_b_2 = 15,9,8,7,8,6,5,0
+
+# L_i^w: destination passenger demand for each station i.
+# Origin station i=0 keeps zero destination demand.
+scenario_l_0 = 0,5,8,9,10,9,7,8
+scenario_l_1 = 0,6,8,10,11,9,7,7
+scenario_l_2 = 0,5,9,10,10,9,7,8

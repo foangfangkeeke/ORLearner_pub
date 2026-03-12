@@ -115,3 +115,68 @@ $$
 y \in Y
 \end{cases}
 $$
+
+---
+
+
+
+### 补充：inference cut
+
+前述cut基于拉格朗日对偶，但实际上有更多的方式构造割
+
+当子问题不是纯LP（例如仍含整数变量）时，常用的是组合型原始割（也叫整数L-shaped割），而不是直接依赖对偶极点/极方向。
+
+设第$k$次主问题解为$y^k\in\{0,1\}^n$，定义：
+
+$$
+S_k^+=\{s\mid y_s^k=1\},\quad \bar S_k^-=\{s\mid y_s^k=0\}
+$$
+
+以及汉明偏差项：
+
+$$
+\Delta_k(y)=\sum_{s\in S_k^{+}}(1-y_s)+\sum_{s\in S_k^{-}}y_s
+$$
+
+1. **可行性割（No-good cut， 不良割）**
+
+若$z^k$导致子问题不可行，则排除该同一二进制组合（每项都不一样）：
+
+$$
+\sum_{s\in S_k^{+}}(1-y_s)+\sum_{s\in S_k^{-}}y_s\ge 1
+$$
+
+2. **原始最优性割（Integer L-shaped）**
+
+SP如果是LP，最优割是基于DSP的最优值（强对偶性）
+
+SP如果是IP/MIP，由于不具有强对偶性，虽然也能写成$q \ge \phi(\bar y)$格式，但是这是点约束没法生成割平面，需要先松弛子问题为RSP，然后基于DRSP的最优值（此时有强对偶性，并且松弛完就有极点了），但是肯定弱一些，首先会有：
+$$
+q \ge DRSP(\bar y)
+$$
+
+
+设$Q(z^k)$为当前子问题最优值，$L$为有效下界（global lower bound），则：
+
+$$
+q \ge \phi(\bar y)-\big(\phi(\bar y)-L\big)\Delta_k(y)
+$$
+
+展开后可写成主问题常见接口形式：
+
+$$
+θ\ge c_k+\sum_s \pi_{ks}z_s
+$$
+
+其中：
+
+$$
+\pi_{ks}=\begin{cases}
+Q(z^k)-L, & s\in S_k\\
+-(Q(z^k)-L), & s\in \bar S_k
+\end{cases}
+$$
+
+$$
+c_k=Q(z^k)-\big(Q(z^k)-L\big)|S_k|
+$$

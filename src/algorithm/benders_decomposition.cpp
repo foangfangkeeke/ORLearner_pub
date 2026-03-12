@@ -1,5 +1,6 @@
 #include "benders_decomposition.hpp"
 #include "FCTP.hpp"
+#include "BARP_S.hpp"
 #include "tools.hpp"
 
 #include <algorithm>
@@ -18,6 +19,12 @@ static const std::map<ProblemType,
         std::make_tuple(
             []() { return std::make_unique<FCTPDataInitializationStrategy_Benders>(); },
             []() { return std::make_unique<FCTPSubProblemStrategy_Benders>(); })
+    },
+    {
+        BARP_S,
+        std::make_tuple(
+            []() { return std::make_unique<BRSDataInitializationStrategy_Benders>(); },
+            []() { return std::make_unique<BRSSubProblemStrategy_Benders>(); })
     }
 };
 
@@ -182,12 +189,12 @@ Status BendersDecomposition::Solve()
             }
         }
 
-        std::cout << "Benders iter " << iter << ", MP obj=" << masterObj;
+        std::cout << "Benders iter " << iter;
         if (std::isfinite(bestUpperBound)) {
             std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound;
             double denom = std::max(1.0, std::fabs(bestUpperBound));
             double relGap = (bestUpperBound - bestLowerBound) / denom;
-            std::cout << ", gap=" << relGap;
+            std::cout << ", gap=" << relGap * 100.0 << "%, " << (cutInfo.isOptimalityCut ? "opt cut" : "feas cut");
         }
         std::cout << std::endl;
 

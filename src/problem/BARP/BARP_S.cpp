@@ -622,3 +622,449 @@ void BRSDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
     std::cout << "Loaded BRS BARP-S data for direct solver." << std::endl;
     std::cout << "Vars=" << vars.size() << ", Constrs=" << constrs.size() << std::endl;
 }
+
+void BRSDataInitializationStrategy_Benders::DataInit(ProblemData& problemData)
+{
+    BRSRawInput input = LoadBRSInput();
+
+    std::vector<int> storageStations;
+    std::vector<double> storageCosts;
+    storageStations.reserve(static_cast<size_t>(input.stationCount));
+    storageCosts.reserve(static_cast<size_t>(input.stationCount));
+
+    for (int i = 0; i < input.stationCount; ++i) {
+        if (input.storageFlags[static_cast<size_t>(i)] == 1) {
+            storageStations.push_back(i);
+            storageCosts.push_back(input.brsCosts[static_cast<size_t>(i)]);
+        }
+    }
+
+    const int storageCount = static_cast<int>(storageStations.size());
+
+    std::vector<ProblemDataVar> masterVars;
+    masterVars.reserve(static_cast<size_t>(storageCount));
+    for (int s = 0; s < storageCount; ++s) {
+        ProblemDataVar var;
+        var.lb = 0.0;
+        var.ub = 1.0;
+        var.obj = input.lambdaCost * storageCosts[static_cast<size_t>(s)];
+        var.type = 'B';
+        var.name = "z_station_" + std::to_string(storageStations[static_cast<size_t>(s)]);
+        masterVars.push_back(var);
+    } // finished master problem variable definition
+
+    const int nodePerStation = input.horizon + 1;
+    auto nodeIndex = [nodePerStation](int i, int t) {
+        return i * nodePerStation + t;
+    };
+
+    std::vector<BRSArcData> arcs;
+    for (int i = 0; i < input.stationCount; ++i) {
+        for (int t = 0; t < input.horizon; ++t) {
+            BRSArcData arc;
+            arc.fromStation = i;
+            arc.fromTime = t;
+            arc.toStation = i;
+            arc.toTime = t + 1;
+            arc.type = 'W';
+            arcs.push_back(arc);
+        }
+    }
+
+    AppendTravelArcs(input, arcs);
+
+    for (int s = 0; s < storageCount; ++s) {
+        int station = storageStations[static_cast<size_t>(s)];
+        for (int t = 0; t < input.horizon; ++t) {
+            BRSArcData arc;
+            arc.fromStation = -1;
+            arc.fromTime = -1;
+            arc.toStation = station;
+            arc.toTime = t;
+            arc.type = 'I';
+            arc.storageIndex = s;
+            arcs.push_back(arc);
+        }
+    }
+
+    const int nodeCount = input.stationCount * nodePerStation;
+    std::vector<std::vector<int>> nodeIncomingX(static_cast<size_t>(nodeCount));
+    std::vector<std::vector<int>> nodeOutgoingX(static_cast<size_t>(nodeCount));
+    std::vector<std::vector<int>> nodeIncomingY(static_cast<size_t>(nodeCount));
+    std::vector<std::vector<int>> nodeOutgoingY(static_cast<size_t>(nodeCount));
+    std::vector<std::vector<int>> nodeIncomingTravelX(static_cast<size_t>(nodeCount));
+    std::vector<std::vector<int>> assignmentArcsByStorage(static_cast<size_t>(storageCount));
+
+    std::vector<int> xToYArc(static_cast<size_t>(arcs.size()), -1);
+    std::vector<int> yToXArc;
+
+    for (int a = 0; a < static_cast<int>(arcs.size()); ++a) {
+        const auto& arc = arcs[static_cast<size_t>(a)];
+        int toNode = nodeIndex(arc.toStation, arc.toTime);
+        nodeIncomingX[static_cast<size_t>(toNode)].push_back(a);
+
+        if (arc.fromStation >= 0) {
+            int fromNode = nodeIndex(arc.fromStation, arc.fromTime);
+            nodeOutgoingX[static_cast<size_t>(fromNode)].push_back(a);
+        }
+
+        if (arc.type != 'I') {
+            int yIdx = static_cast<int>(yToXArc.size());
+            xToYArc[static_cast<size_t>(a)] = yIdx;
+            yToXArc.push_back(a);
+            nodeIncomingY[static_cast<size_t>(toNode)].push_back(yIdx);
+            if (arc.fromStation >= 0) {
+                int fromNode = nodeIndex(arc.fromStation, arc.fromTime);
+                nodeOutgoingY[static_cast<size_t>(fromNode)].push_back(yIdx);
+            }
+        }
+
+        if (arc.type == 'T') {
+            nodeIncomingTravelX[static_cast<size_t>(toNode)].push_back(a);
+        }
+
+        if (arc.type == 'I') {
+            assignmentArcsByStorage[static_cast<size_t>(arc.storageIndex)].push_back(a);
+        }
+    }
+
+    problemData.addData("masterVars", masterVars);
+    problemData.addData("brsStationCount", input.stationCount);
+    problemData.addData("brsHorizon", input.horizon);
+    problemData.addData("brsTravelTimes", input.travelTimes);
+    problemData.addData("brsExistingTrains", input.existingTrains);
+    problemData.addData("brsStorageStations", storageStations);
+    problemData.addData("brsBudget", input.budget);
+    problemData.addData("brsTrainCapacity", input.trainCapacity);
+    problemData.addData("brsMinHeadway", input.minHeadway);
+    problemData.addData("brsStorageCount", storageCount);
+    problemData.addData("brsScenarios", input.scenarios);
+    problemData.addData("brsArcs", arcs);
+    problemData.addData("brsXToYArc", xToYArc);
+    problemData.addData("brsYToXArc", yToXArc);
+    problemData.addData("brsNodeIncomingX", nodeIncomingX);
+    problemData.addData("brsNodeOutgoingX", nodeOutgoingX);
+    problemData.addData("brsNodeIncomingY", nodeIncomingY);
+    problemData.addData("brsNodeOutgoingY", nodeOutgoingY);
+    problemData.addData("brsNodeIncomingTravelX", nodeIncomingTravelX);
+    problemData.addData("brsAssignArcsByStorage", assignmentArcsByStorage);
+
+    std::cout << "Loaded BRS BARP-S data for Benders decomposition." << std::endl;
+    std::cout << "Stations=" << input.stationCount
+              << ", horizon=" << input.horizon
+              << ", scenarios=" << input.scenarios.size()
+              << ", master vars(z)=" << masterVars.size() << std::endl;
+}
+
+std::vector<ProblemDataConstr> BRSDataInitializationStrategy_Benders::ConstrInit(ProblemData& problemData)
+{
+    int storageCount = problemData.getData<int>("brsStorageCount");
+    int budget = problemData.getData<int>("brsBudget");
+
+    ProblemDataConstr budgetConstr;
+    budgetConstr.coeffs.assign(static_cast<size_t>(storageCount), 1.0);
+    budgetConstr.sense = '<';
+    budgetConstr.rhs = static_cast<double>(budget);
+    budgetConstr.name = "brs_budget";
+
+    return {budgetConstr};
+}
+
+void BRSSubProblemStrategy_Benders::InitSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    BendersSubProblemContext& context)
+{
+    const int stationCount = problemData.getData<int>("brsStationCount");
+    const int horizon = problemData.getData<int>("brsHorizon");
+    const int minHeadway = problemData.getData<int>("brsMinHeadway");
+    const int trainCapacity = problemData.getData<int>("brsTrainCapacity");
+    const int storageCount = problemData.getData<int>("brsStorageCount");
+
+    const auto& existingTrains = problemData.getData<std::vector<int>>("brsExistingTrains");
+    const auto& scenarios = problemData.getData<std::vector<BRSScenarioData>>("brsScenarios");
+    const auto& arcs = problemData.getData<std::vector<BRSArcData>>("brsArcs");
+    const auto& yToXArc = problemData.getData<std::vector<int>>("brsYToXArc");
+    const auto& nodeIncomingX = problemData.getData<std::vector<std::vector<int>>>("brsNodeIncomingX");
+    const auto& nodeOutgoingX = problemData.getData<std::vector<std::vector<int>>>("brsNodeOutgoingX");
+    const auto& nodeIncomingY = problemData.getData<std::vector<std::vector<int>>>("brsNodeIncomingY");
+    const auto& nodeOutgoingY = problemData.getData<std::vector<std::vector<int>>>("brsNodeOutgoingY");
+    const auto& nodeIncomingTravelX = problemData.getData<std::vector<std::vector<int>>>("brsNodeIncomingTravelX");
+    const auto& assignmentArcsByStorage = problemData.getData<std::vector<std::vector<int>>>("brsAssignArcsByStorage");
+
+    const int scenarioCount = static_cast<int>(scenarios.size());
+    const int arcCount = static_cast<int>(arcs.size());
+    const int yArcCount = static_cast<int>(yToXArc.size());
+    const int activeAlphaHorizon = std::max(0, horizon - 1);
+    const int alphaCountPerScenario = stationCount * activeAlphaHorizon;
+
+    const int nodePerStation = horizon + 1;
+    auto nodeIndex = [nodePerStation](int i, int t) {
+        return i * nodePerStation + t;
+    };
+
+    context.Clear();
+    auto& xVars = context.EnsureVarGroup(kVarGroupX);
+    auto& yVars = context.EnsureVarGroup(kVarGroupY);
+    auto& alphaVars = context.EnsureVarGroup(kVarGroupAlpha);
+    auto& assignmentConstrs = context.EnsureConstrGroup(kConstrGroupAssign);
+
+    xVars.reserve(static_cast<size_t>(scenarioCount * arcCount));
+    yVars.reserve(static_cast<size_t>(scenarioCount * yArcCount));
+    alphaVars.reserve(static_cast<size_t>(scenarioCount * alphaCountPerScenario));
+    assignmentConstrs.reserve(static_cast<size_t>(scenarioCount * storageCount));
+
+    subModel.set(GRB_IntParam_InfUnbdInfo, 1);
+    subModel.set(GRB_IntParam_DualReductions, 0);
+
+    auto xAt = [&xVars, arcCount](int w, int arcIdx) {
+        return xVars[static_cast<size_t>(w * arcCount + arcIdx)];
+    };
+    auto yAt = [&yVars, yArcCount](int w, int yArcIdx) {
+        return yVars[static_cast<size_t>(w * yArcCount + yArcIdx)];
+    };
+    auto alphaAt = [&alphaVars, activeAlphaHorizon, alphaCountPerScenario](int w, int i, int t) {
+        int local = i * activeAlphaHorizon + (t - 1);
+        return alphaVars[static_cast<size_t>(w * alphaCountPerScenario + local)];
+    };
+
+    for (int w = 0; w < scenarioCount; ++w) {
+        for (int a = 0; a < arcCount; ++a) {
+            xVars.push_back(subModel.addVar(0.0, 1.0, 0.0, GRB_BINARY,
+                "x_w" + std::to_string(w) + "_a" + std::to_string(a)));
+        }
+
+        const double scenarioTotalDemand = std::accumulate(
+            scenarios[static_cast<size_t>(w)].originDemand.begin(),
+            scenarios[static_cast<size_t>(w)].originDemand.end(), 0.0);
+        for (int a = 0; a < yArcCount; ++a) {
+            yVars.push_back(subModel.addVar(0.0, scenarioTotalDemand, 0.0, GRB_CONTINUOUS,
+                "y_w" + std::to_string(w) + "_a" + std::to_string(a)));
+        }
+
+        for (int i = 0; i < stationCount; ++i) {
+            for (int t = 1; t < horizon; ++t) {
+                alphaVars.push_back(subModel.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS,
+                    "alpha_w" + std::to_string(w) + "_i" + std::to_string(i) + "_t" + std::to_string(t)));
+            }
+        }
+    }
+
+    for (int w = 0; w < scenarioCount; ++w) {
+        for (int i = 0; i < stationCount; ++i) {
+            for (int t = 0; t < horizon; ++t) {
+                int node = nodeIndex(i, t);
+                GRBLinExpr lhs = 0.0;
+                for (int arcIdx : nodeOutgoingX[static_cast<size_t>(node)]) {
+                    lhs += xAt(w, arcIdx);
+                }
+                for (int arcIdx : nodeIncomingX[static_cast<size_t>(node)]) {
+                    lhs -= xAt(w, arcIdx);
+                }
+                double rhs = (t == 0) ? static_cast<double>(existingTrains[static_cast<size_t>(i)]) : 0.0;
+                subModel.addConstr(lhs, '=', rhs,
+                    "train_balance_w" + std::to_string(w) + "_i" + std::to_string(i) + "_t" + std::to_string(t));
+            }
+        }
+
+        for (int s = 0; s < storageCount; ++s) {
+            GRBLinExpr lhs = 0.0;
+            for (int arcIdx : assignmentArcsByStorage[static_cast<size_t>(s)]) {
+                lhs += xAt(w, arcIdx);
+            }
+            assignmentConstrs.push_back(subModel.addConstr(lhs, '<', 0.0, // rhs is provided by master problem
+                "assign_w" + std::to_string(w) + "_s" + std::to_string(s)));
+        }
+
+        for (int i = 0; i < stationCount; ++i) {
+            for (int t = 0; t <= horizon; ++t) {
+                GRBLinExpr lhs = 0.0;
+                int latest = std::min(horizon, t + minHeadway);
+                for (int tau = t; tau <= latest; ++tau) {
+                    int node = nodeIndex(i, tau);
+                    for (int arcIdx : nodeIncomingTravelX[static_cast<size_t>(node)]) {
+                        lhs += xAt(w, arcIdx);
+                    }
+                }
+                subModel.addConstr(lhs, '<', 1.0,
+                    "headway_w" + std::to_string(w) + "_i" + std::to_string(i) + "_t" + std::to_string(t));
+            }
+        }
+
+        for (int i = 0; i < stationCount; ++i) {
+            for (int t = 0; t < horizon; ++t) {
+                int node = nodeIndex(i, t);
+                GRBLinExpr lhs = 0.0;
+                for (int yArcIdx : nodeIncomingY[static_cast<size_t>(node)]) {
+                    lhs += yAt(w, yArcIdx);
+                }
+                for (int yArcIdx : nodeOutgoingY[static_cast<size_t>(node)]) {
+                    lhs -= yAt(w, yArcIdx);
+                }
+
+                if (t == 0) {
+                    subModel.addConstr(lhs, '=',
+                        -scenarios[static_cast<size_t>(w)].originDemand[static_cast<size_t>(i)],
+                        "passenger_balance0_w" + std::to_string(w) + "_i" + std::to_string(i));
+                } else {
+                    lhs -= alphaAt(w, i, t);
+                    subModel.addConstr(lhs, '=', 0.0,
+                        "passenger_balance_w" + std::to_string(w) + "_i" + std::to_string(i) +
+                            "_t" + std::to_string(t));
+                }
+            }
+        }
+
+        for (int i = 0; i < stationCount; ++i) {
+            GRBLinExpr lhs = 0.0;
+            for (int t = 1; t < horizon; ++t) {
+                lhs += alphaAt(w, i, t);
+            }
+            subModel.addConstr(lhs, '<', scenarios[static_cast<size_t>(w)].destinationDemand[static_cast<size_t>(i)],
+                "alight_total_w" + std::to_string(w) + "_i" + std::to_string(i));
+        }
+
+        double bigM = std::accumulate( // TODO: 用数组表示，降低大M影响
+            scenarios[static_cast<size_t>(w)].originDemand.begin(),
+            scenarios[static_cast<size_t>(w)].originDemand.end(), 0.0);
+
+        for (int i = 0; i < stationCount; ++i) {
+            for (int t = 1; t < horizon; ++t) {
+                int node = nodeIndex(i, t);
+                GRBLinExpr arriveTrain = 0.0;
+                for (int arcIdx : nodeIncomingTravelX[static_cast<size_t>(node)]) {
+                    arriveTrain += xAt(w, arcIdx);
+                }
+                subModel.addConstr(alphaAt(w, i, t) <= bigM * arriveTrain,
+                    "alight_link_w" + std::to_string(w) + "_i" + std::to_string(i) + "_t" + std::to_string(t));
+            }
+        }
+
+        for (int yArcIdx = 0; yArcIdx < yArcCount; ++yArcIdx) {
+            int arcIdx = yToXArc[static_cast<size_t>(yArcIdx)];
+            if (arcs[static_cast<size_t>(arcIdx)].type == 'T') {
+                subModel.addConstr(
+                    yAt(w, yArcIdx) <= static_cast<double>(trainCapacity) * xAt(w, arcIdx),
+                    "travel_cap_w" + std::to_string(w) + "_a" + std::to_string(yArcIdx));
+            }
+        }
+    }
+
+    GRBLinExpr objective = 0.0;
+    for (int w = 0; w < scenarioCount; ++w) {
+        const double probability = scenarios[static_cast<size_t>(w)].probability;
+        const double totalDestination = std::accumulate(
+            scenarios[static_cast<size_t>(w)].destinationDemand.begin(),
+            scenarios[static_cast<size_t>(w)].destinationDemand.end(), 0.0);
+
+        objective += probability * static_cast<double>(horizon) * totalDestination;
+        for (int i = 0; i < stationCount; ++i) {
+            for (int t = 1; t < horizon; ++t) {
+                objective += probability * (static_cast<double>(t) - static_cast<double>(horizon)) *
+                             alphaAt(w, i, t);
+            }
+        }
+    }
+
+    subModel.setObjective(objective, GRB_MINIMIZE);
+    subModel.update();
+
+    lowerBoundReady = false;
+    for (auto& assignConstr : assignmentConstrs) {
+        assignConstr.set(GRB_DoubleAttr_RHS, 1.0);
+    }
+    subModel.update();
+
+    subModel.optimize();
+    int status = subModel.get(GRB_IntAttr_Status);
+    if (status != GRB_OPTIMAL) {
+        throw std::runtime_error(
+            "Failed to compute BARP-S Benders lower bound, status: " + std::to_string(status));
+    }
+
+    qLowerBound = subModel.get(GRB_DoubleAttr_ObjVal);
+    lowerBoundReady = true;
+
+    subModel.update();
+}
+
+void BRSSubProblemStrategy_Benders::UpdateSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    BendersSubProblemContext& context, const std::vector<double>& zValues)
+{
+    const int scenarioCount = static_cast<int>(problemData.getData<std::vector<BRSScenarioData>>("brsScenarios").size());
+    const int storageCount = problemData.getData<int>("brsStorageCount");
+
+    auto& assignConstrs = context.EnsureConstrGroup(kConstrGroupAssign);
+
+    for (int w = 0; w < scenarioCount; ++w) {
+        for (int s = 0; s < storageCount; ++s) {
+            assignConstrs[static_cast<size_t>(w * storageCount + s)]
+                .set(GRB_DoubleAttr_RHS, zValues[static_cast<size_t>(s)]);
+        }
+    }
+
+    subModel.update();
+}
+
+Status BRSSubProblemStrategy_Benders::SolveSubProblem( const ProblemData& problemData, GRBModel& subModel,
+    BendersSubProblemContext& context, const std::vector<double>& zValues, BendersCutInfo& cutInfo, double& subObj)
+{
+    const int storageCount = problemData.getData<int>("brsStorageCount");
+
+    if (static_cast<int>(zValues.size()) != storageCount) {
+        std::cerr << "BRS sub-problem: z value size mismatch" << std::endl;
+        return ERROR;
+    }
+
+    subModel.optimize();
+    int status = subModel.get(GRB_IntAttr_Status);
+    if (status == GRB_INFEASIBLE || status == GRB_INF_OR_UNBD || status == GRB_UNBOUNDED) {
+        cutInfo.isOptimalityCut = false;
+        cutInfo.sense = '>';
+        cutInfo.yCoeffs.assign(static_cast<size_t>(storageCount), 0.0);
+
+        int selectedCount = 0;
+        for (int s = 0; s < storageCount; ++s) {
+            bool selected = zValues[static_cast<size_t>(s)] > 0.5;
+            if (selected) {
+                ++selectedCount;
+                cutInfo.yCoeffs[static_cast<size_t>(s)] = -1.0;
+            } else {
+                cutInfo.yCoeffs[static_cast<size_t>(s)] = 1.0;
+            }
+        }
+
+        // No-good cut for binary z: sum_{s in S1}(1-z_s) + sum_{s in S0} z_s >= 1.
+        cutInfo.rhs = 1.0 - static_cast<double>(selectedCount);
+        cutInfo.constant = 0.0;
+        subObj = GRB_INFINITY;
+        return OK;
+    }
+
+    if (status != GRB_OPTIMAL) {
+        std::cerr << "BRS sub-problem ended with unexpected status: " << status << std::endl;
+        return ERROR;
+    }
+
+    subObj = subModel.get(GRB_DoubleAttr_ObjVal);
+
+    double lowerBound = lowerBoundReady ? qLowerBound : 0.0;
+    double delta = std::max(0.0, subObj - lowerBound);
+
+    int selectedCount = 0;
+    cutInfo.yCoeffs.assign(static_cast<size_t>(storageCount), 0.0);
+    for (int s = 0; s < storageCount; ++s) {
+        bool selected = zValues[static_cast<size_t>(s)] > 0.5;
+        if (selected) {
+            ++selectedCount;
+            cutInfo.yCoeffs[static_cast<size_t>(s)] = delta;
+        } else {
+            cutInfo.yCoeffs[static_cast<size_t>(s)] = -delta;
+        }
+    }
+
+    cutInfo.constant = lowerBound + delta * (1.0 - static_cast<double>(selectedCount));
+    cutInfo.rhs = 0.0;
+    cutInfo.isOptimalityCut = true;
+    cutInfo.sense = '>';
+
+    return OK;
+}

@@ -1,4 +1,5 @@
 #include "BARP_S.hpp"
+#include "tools.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -33,66 +34,11 @@ struct BRSRawInput {
     std::vector<BRSScenarioData> scenarios;
 };
 
-std::string Trim(const std::string& text) // TODO: 提取到工具类
-{
-    size_t left = 0;
-    while (left < text.size() && std::isspace(static_cast<unsigned char>(text[left]))) {
-        ++left;
-    }
-    size_t right = text.size();
-    while (right > left && std::isspace(static_cast<unsigned char>(text[right - 1]))) {
-        --right;
-    }
-    return text.substr(left, right - left);
-}
-
-std::string ToLower(std::string text)
-{
-    std::transform(
-        text.begin(),
-        text.end(),
-        text.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return text;
-}
-
-std::vector<std::string> SplitByComma(const std::string& text)
-{
-    std::vector<std::string> parts;
-    std::istringstream stream(text);
-    std::string token;
-    while (std::getline(stream, token, ',')) {
-        token = Trim(token);
-        if (!token.empty()) {
-            parts.push_back(token);
-        }
-    }
-    return parts;
-}
-
-std::vector<int> ParseIntList(const std::string& text)
-{
-    std::vector<int> values;
-    for (const auto& token : SplitByComma(text)) {
-        values.push_back(std::stoi(token));
-    }
-    return values;
-}
-
-std::vector<double> ParseDoubleList(const std::string& text)
-{
-    std::vector<double> values;
-    for (const auto& token : SplitByComma(text)) {
-        values.push_back(std::stod(token));
-    }
-    return values;
-}
-
 const std::string& RequireKey(
     const std::unordered_map<std::string, std::string>& kv,
     const std::string& key)
 {
-    auto it = kv.find(ToLower(key));
+    auto it = kv.find(Tools::ToLower(key));
     if (it == kv.end()) {
         throw std::runtime_error("Missing key in BRS data file: " + key);
     }
@@ -116,7 +62,7 @@ BRSRawInput LoadBRSInput()
         if (commentPos != std::string::npos) {
             line = line.substr(0, commentPos);
         }
-        line = Trim(line);
+        line = Tools::Trim(line);
         if (line.empty()) {
             continue;
         }
@@ -126,29 +72,29 @@ BRSRawInput LoadBRSInput()
             continue;
         }
 
-        std::string key = ToLower(Trim(line.substr(0, eqPos)));
-        std::string value = Trim(line.substr(eqPos + 1));
+        std::string key = Tools::ToLower(Tools::Trim(line.substr(0, eqPos)));
+        std::string value = Tools::Trim(line.substr(eqPos + 1));
         kv[key] = value;
     }
 
     BRSRawInput input;
     input.stationCount = std::stoi(RequireKey(kv, "station_count"));
     input.horizon = std::stoi(RequireKey(kv, "time_horizon"));
-    input.travelTimes = ParseIntList(RequireKey(kv, "travel_times"));
+    input.travelTimes = Tools::ParseIntList(RequireKey(kv, "travel_times"));
     if (static_cast<int>(input.travelTimes.size()) != input.stationCount - 1) {
         throw std::runtime_error("travel_times size must equal station_count - 1");
     }
 
-    input.existingTrains = ParseIntList(RequireKey(kv, "existing_trains"));
-    input.storageFlags = ParseIntList(RequireKey(kv, "storage_flags"));
-    input.brsCosts = ParseDoubleList(RequireKey(kv, "brs_costs"));
+    input.existingTrains = Tools::ParseIntList(RequireKey(kv, "existing_trains"));
+    input.storageFlags = Tools::ParseIntList(RequireKey(kv, "storage_flags"));
+    input.brsCosts = Tools::ParseDoubleList(RequireKey(kv, "brs_costs"));
     input.budget = std::stoi(RequireKey(kv, "budget"));
     input.trainCapacity = std::stoi(RequireKey(kv, "train_capacity"));
     input.minHeadway = std::stoi(RequireKey(kv, "min_headway"));
     input.lambdaCost = std::stod(RequireKey(kv, "lambda_cost"));
 
     int scenarioCount = std::stoi(RequireKey(kv, "scenario_count"));
-    std::vector<double> probabilities = ParseDoubleList(RequireKey(kv, "scenario_probabilities"));
+    std::vector<double> probabilities = Tools::ParseDoubleList(RequireKey(kv, "scenario_probabilities"));
     if (static_cast<int>(probabilities.size()) != scenarioCount) {
         throw std::runtime_error("scenario_probabilities size does not match scenario_count");
     }
@@ -157,9 +103,9 @@ BRSRawInput LoadBRSInput()
     for (int w = 0; w < scenarioCount; ++w) {
         input.scenarios[static_cast<size_t>(w)].probability = probabilities[static_cast<size_t>(w)];
         input.scenarios[static_cast<size_t>(w)].originDemand =
-            ParseDoubleList(RequireKey(kv, "scenario_b_" + std::to_string(w)));
+            Tools::ParseDoubleList(RequireKey(kv, "scenario_b_" + std::to_string(w)));
         input.scenarios[static_cast<size_t>(w)].destinationDemand =
-            ParseDoubleList(RequireKey(kv, "scenario_l_" + std::to_string(w)));
+            Tools::ParseDoubleList(RequireKey(kv, "scenario_l_" + std::to_string(w)));
     }
 
     if (input.stationCount < 2) {

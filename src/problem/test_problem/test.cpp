@@ -3,6 +3,7 @@
 
 #include "test.hpp"
 #include "basic_solver.hpp"
+#include "tools.hpp"
 
 #include <fstream>
 #include <vector>
@@ -13,38 +14,6 @@
 #include <filesystem>
 
 using namespace std;
-
-std::string trim(const std::string& s) {
-    auto start = s.begin();
-    while (start != s.end() && std::isspace(static_cast<unsigned char>(*start))) {
-        start++;
-    }
-    auto end = s.end();
-    do {
-        end--;
-    } while (std::distance(start, end) > 0 && std::isspace(static_cast<unsigned char>(*end)));
-    return std::string(start, end + 1);
-}
-
-std::vector<std::string> split(const std::string& s, char delimiter) {
-    std::vector<std::string> tokens;
-    std::string token;
-    std::istringstream tokenStream(s);
-    while (std::getline(tokenStream, token, delimiter)) {
-        tokens.push_back(trim(token));
-    }
-    return tokens;
-}
-
-bool readValidLine(std::istream& stream, std::string& line) {
-    while (std::getline(stream, line)) {
-        line = trim(line);
-        if (!line.empty() && line[0] != '#') {
-            return true;
-        }
-    }
-    return false;
-}
 
 namespace {
 bool LoadTestData(vector<ProblemDataVar>& vars, vector<ProblemDataConstr>& constrs, int& obj)
@@ -58,12 +27,12 @@ bool LoadTestData(vector<ProblemDataVar>& vars, vector<ProblemDataConstr>& const
         std::ifstream stream(dataPath);
         std::string line;
 
-        if (!readValidLine(stream, line)) return true;
+        if (!Tools::ReadValidLine(stream, line)) return true;
         int numVar = std::stoi(line);
 
         for (int i = 0; i < numVar; ++i) {
-            if (!readValidLine(stream, line)) return true;
-            auto parts = split(line, ',');
+            if (!Tools::ReadValidLine(stream, line)) return true;
+            auto parts = Tools::SplitAndTrim(line, ',');
             
             ProblemDataVar var;
             var.lb = std::stod(parts[0]);
@@ -76,12 +45,12 @@ bool LoadTestData(vector<ProblemDataVar>& vars, vector<ProblemDataConstr>& const
             vars.push_back(var);
         }
 
-        if (!readValidLine(stream, line)) return true;
+        if (!Tools::ReadValidLine(stream, line)) return true;
         int numConstr = std::stoi(line);
 
         for (int i = 0; i < numConstr; ++i) {
-            if (!readValidLine(stream, line)) return true;
-            auto parts = split(line, ',');
+            if (!Tools::ReadValidLine(stream, line)) return true;
+            auto parts = Tools::SplitAndTrim(line, ',');
             
             ProblemDataConstr constr;
             constr.coeffs.push_back(std::stod(parts[0]));
@@ -93,7 +62,7 @@ bool LoadTestData(vector<ProblemDataVar>& vars, vector<ProblemDataConstr>& const
             constrs.push_back(constr);
         }
 
-        if (!readValidLine(stream, line)) return true;
+        if (!Tools::ReadValidLine(stream, line)) return true;
         obj = (line == "min") ? 1 : -1; 
 
         return false;

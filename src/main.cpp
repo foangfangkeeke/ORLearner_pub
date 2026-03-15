@@ -2,6 +2,7 @@
 #include "column_generation.hpp"
 #include "branch_and_price.hpp"
 #include "benders_decomposition.hpp"
+#include "barp_s_integer_l_shaped.hpp"
 
 #include <iostream>
 #include <fstream>
@@ -118,6 +119,8 @@ int main(int argc, char* argv[]) {
             solver.SetAlgorithm(std::make_unique<ColumnGeneration>(problemType));
         } else if (algLower == "bp") {
             solver.SetAlgorithm(std::make_unique<BranchAndPrice>(problemType));
+        } else if (algLower == "lshape" || algLower == "lshaped") {
+            solver.SetAlgorithm(std::make_unique<BARPSIntegerLShaped>(problemType));
         } else if (algLower == "benders" || algLower == "bd") {
             solver.SetAlgorithm(std::make_unique<BendersDecomposition>(problemType));
         } else {

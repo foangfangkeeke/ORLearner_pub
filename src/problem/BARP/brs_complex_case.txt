@@ -1,0 +1,45 @@
+# BARP-S complex validation case for the longer one-way route.
+# Stations are indexed along one direction: 0 -> 1 -> ... -> 11.
+# Use this file by temporarily replacing brs_small_case.txt content.
+# All keys are case-insensitive.
+
+station_count = 12
+time_horizon = 18
+
+# travel_times defines directed arcs i -> i+1.
+travel_times = 2,2,3,2,2,3,2,2,2,3,2
+
+# Number of existing trains at t=0 for each station.
+existing_trains = 1,0,0,1,0,0,1,0,0,0,0,0
+
+# Whether station has a storage line that can host one BRS (0/1).
+# Terminal stations 0 and 11 are disabled.
+storage_flags = 0,1,1,1,1,1,1,1,1,1,1,0
+
+# Cost of allocating a BRS to each station (used only when storage_flag=1).
+brs_costs = 60,9,10,12,13,14,14,13,12,10,9,60
+budget = 5
+lambda_cost = 1.0
+
+# Tighter operating settings to stress headway/capacity interactions.
+train_capacity = 18
+min_headway = 2
+
+scenario_count = 5
+scenario_probabilities = 0.15,0.20,0.25,0.20,0.20
+
+# B_i^w: origin passenger demand at t=0 for each station i.
+# Terminal station i=11 keeps zero origin demand.
+scenario_b_0 = 16,14,12,10,9,8,7,6,5,4,3,0
+scenario_b_1 = 18,13,11,10,9,8,8,6,5,4,2,0
+scenario_b_2 = 15,15,12,11,10,9,7,6,5,4,3,0
+scenario_b_3 = 17,14,13,10,9,9,8,7,6,4,3,0
+scenario_b_4 = 14,13,12,11,10,9,8,7,6,5,4,0
+
+# L_i^w: destination passenger demand for each station i.
+# Origin station i=0 keeps zero destination demand.
+scenario_l_0 = 0,4,7,8,10,10,11,11,10,9,8,6
+scenario_l_1 = 0,3,6,8,9,10,11,11,11,10,8,7
+scenario_l_2 = 0,4,7,8,10,10,11,12,11,10,8,6
+scenario_l_3 = 0,4,7,9,10,11,12,12,11,10,8,6
+scenario_l_4 = 0,4,7,9,10,11,12,12,11,10,8,5

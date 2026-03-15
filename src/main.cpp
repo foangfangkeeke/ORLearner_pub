@@ -3,6 +3,7 @@
 #include "branch_and_price.hpp"
 #include "benders_decomposition.hpp"
 #include "barp_s_integer_l_shaped.hpp"
+#include "tools.hpp"
 
 #include <iostream>
 #include <fstream>
@@ -61,30 +62,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    auto splitComma = [](const string& value) {
-        vector<string> parts;
-        string token;
-        stringstream ss(value);
-        while (getline(ss, token, ',')) {
-            if (!token.empty()) {
-                parts.push_back(token);
-            }
-        }
-        if (parts.empty()) {
-            parts.push_back(value);
-        }
-        return parts;
-    };
+    vector<string> descList = Tools::SplitAndTrim(desc, ',', true);
+    if (descList.empty()) {
+        descList.push_back(desc);
+    }
 
-    vector<string> descList = splitComma(desc);
-    string algLower = alg;
-    string pbLower = pb;
-    for (char& c : algLower) c = tolower(c);
-    for (char& c : pbLower) c = tolower(c);
+    string algLower = Tools::ToLower(alg);
+    string pbLower = Tools::ToLower(pb);
     for (const auto& descVal : descList) {
-        string descUpper = descVal;
-        for (char& c : descUpper) c = toupper(c);
-
         string coreText = "使用 " + alg + " 求解 " + pb + "_" + descVal;
         int totalWidth = 80;
         int InfoWidth = static_cast<int>(coreText.size());

@@ -1,4 +1,5 @@
 #include "FCTP.hpp"
+#include "tools.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -18,33 +19,6 @@ constexpr const char* kVarGroupU = "u";
 constexpr const char* kVarGroupV = "v";
 constexpr const char* kVarGroupW = "w";
 constexpr const char* kConstrGroupDualCap = "dual_cap";
-
-string Trim(const string& text)
-{
-    size_t left = 0;
-    while (left < text.size() && std::isspace(static_cast<unsigned char>(text[left]))) {
-        ++left;
-    }
-    size_t right = text.size();
-    while (right > left && std::isspace(static_cast<unsigned char>(text[right - 1]))) {
-        --right;
-    }
-    return text.substr(left, right - left);
-}
-
-vector<int> ParseIntList(const string& line)
-{
-    vector<int> values;
-    istringstream stream(line);
-    string token;
-    while (getline(stream, token, ',')) {
-        token = Trim(token);
-        if (!token.empty()) {
-            values.push_back(stoi(token));
-        }
-    }
-    return values;
-}
 
 bool LoadFCTPData(
     vector<int>& supplys,
@@ -76,15 +50,13 @@ bool LoadFCTPData(
     string line;
     try {
         while (getline(fin, line)) {
-            line = Trim(line);
+            line = Tools::Trim(line);
             if (line.empty()) {
                 continue;
             }
 
             if (line[0] == '#') {
-                string header = line.substr(1);
-                transform(header.begin(), header.end(), header.begin(),
-                    [](unsigned char c) { return static_cast<char>(tolower(c)); });
+                string header = Tools::ToLower(line.substr(1));
 
                 if (header.find("supply") != string::npos) {
                     section = Section::Supply;
@@ -100,7 +72,7 @@ bool LoadFCTPData(
                 continue;
             }
 
-            vector<int> values = ParseIntList(line);
+            vector<int> values = Tools::ParseIntList(line);
             if (values.empty()) {
                 continue;
             }

@@ -1,0 +1,3 @@
+# Wireless charging config
+# Valid values: M1, M2, M3, M4
+modelType=M4

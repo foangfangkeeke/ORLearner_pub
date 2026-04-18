@@ -1,6 +1,7 @@
 #include "cutting_stock_problem.hpp"
 #include "FCTP.hpp"
 #include "BARP_S.hpp"
+#include "wireless_charging_strategies.hpp"
 #include "using_solver.hpp"
 #include "test.hpp"
 #include "basic_solver.hpp"
@@ -13,29 +14,45 @@
 #include <cmath>
 #include <map>
 
-static const std::map<ProblemType, std::function<std::unique_ptr<IDataInitializationStrategy_Solver>()>> dataInitMap = {
-    {TEST, [](){return std::make_unique<TestDataInitializationStrategy_Solver>();}},
-    {CUTTINGSTOCK, [](){return std::make_unique<CuttingStockDataInitializationStrategy_Solver>();}},
-    {FCTP, [](){return std::make_unique<FCTPDataInitializationStrategy_Solver>();}},
-    {BARP_S, [](){return std::make_unique<BRSDataInitializationStrategy_Solver>();}}
+static const std::map<
+    ProblemType,
+    std::function<std::unique_ptr<IDataInitializationStrategy_Solver>(const std::string&)>> dataInitMap = {
+    {TEST, [](const std::string&) {
+        return std::make_unique<TestDataInitializationStrategy_Solver>(); }},
+    {CUTTINGSTOCK, [](const std::string&) {
+        return std::make_unique<CuttingStockDataInitializationStrategy_Solver>(); }},
+    {FCTP, [](const std::string&) {
+        return std::make_unique<FCTPDataInitializationStrategy_Solver>(); }},
+    {BARP_S, [](const std::string&) {
+        return std::make_unique<BRSDataInitializationStrategy_Solver>(); }},
+    {WIRELESS_CHARGING, [](const std::string& dataFolder){
+        return std::make_unique<WirelessChargingDataInitializationStrategy_Solver>(dataFolder);
+    }}
 };
 
 Status UsingSolver::Initialize()
 {
-    env = std::make_unique<GRBEnv>(true);
-    env->set("LogFile", "gurobi_log.txt");
-    env->set(GRB_IntParam_OutputFlag, 0);
-    env->start();
-    model = std::make_unique<GRBModel>(*env);
-
     problemData = std::make_unique<ProblemData>();
 
     auto it = dataInitMap.find(problemType);
     if (it == dataInitMap.end()) {
         throw std::invalid_argument("Unsupported problem type");
     }
-    dataIniter = it->second();
+    dataIniter = it->second(dataFolder);
+
     dataIniter->DataInit(*problemData);
+
+    if (dataIniter->UseCustomSolver()) {
+        initialized = true;
+        return OK;
+    }
+
+    env = std::make_unique<GRBEnv>(true);
+    env->set("LogFile", "gurobi_log.txt");
+    env->set(GRB_IntParam_OutputFlag, 0);
+    env->start();
+    model = std::make_unique<GRBModel>(*env);
+
     auto vars = problemData->getData<std::vector<ProblemDataVar>>("vars");
     auto constr = problemData->getData<std::vector<ProblemDataConstr>>("constrs");
     auto objSense = problemData->getData<int>("obj");
@@ -65,6 +82,10 @@ Status UsingSolver::Initialize()
 
 Status UsingSolver::Solve()
 {
+    if (dataIniter && dataIniter->UseCustomSolver()) {
+        return dataIniter->SolveWithStandardInterface(*problemData);
+    }
+
     model->optimize();
     int solveStatus = model->get(GRB_IntAttr_Status);
     if (solveStatus == GRB_OPTIMAL || (solveStatus == GRB_TIME_LIMIT && model->get(GRB_IntAttr_SolCount)>0)) {
@@ -77,6 +98,11 @@ Status UsingSolver::Solve()
     return OK;
 }
 
-UsingSolver::UsingSolver(ProblemType problemType): problemType(problemType) {};
+UsingSolver::UsingSolver(ProblemType problemType, std::string dataFolder)
+    : problemType(problemType), dataFolder(std::move(dataFolder)) {
+    if (this->dataFolder.empty()) {
+        this->dataFolder = "test_data";
+    }
+};
 
 UsingSolver::~UsingSolver() {};

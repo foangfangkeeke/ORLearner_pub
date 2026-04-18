@@ -11,13 +11,12 @@
 #include <sstream>
 #include <optional>
 #include <algorithm>
+#include <stdexcept>
+#include "wireless_charging_strategies.hpp"
 #include "gurobi_c++.h"
-#include "data_reader.hpp"
-#include "outputer.hpp"
-#include "useless.hpp"
+#include "tools.hpp"
 
 using namespace std;
-using namespace print_utils;
 namespace fs = std::filesystem;
 
 #define OFFSET_OPERATION_CFG 0
@@ -27,6 +26,124 @@ namespace fs = std::filesystem;
 #define OFFSET_CHARGER_CFG(numEB) (OFFSET_SCHEDULING_CFG + 3 + (numEB))
 #define GAMMA (0)
 
+using linkTimeType = unordered_map<int, unordered_map<int, double>>;
+using stationTimeType = vector<vector<int>>;
+using stationType = vector<vector<int>>;
+using stringCfgType = vector<vector<string>>;
+
+inline fs::path ResolveDataFolderPath(const string& dataFolder) {
+    return fs::path(__FILE__).parent_path() / dataFolder;
+}
+
+static optional<string> LoadModelTypeFromConfig(const fs::path& filePath) {
+    ifstream fin(filePath);
+    if (!fin.is_open()) {
+        return nullopt;
+    }
+
+    string line;
+    while (getline(fin, line)) {
+        line = Tools::Trim(line);
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+
+        size_t sepPos = line.find('=');
+        if (sepPos == string::npos) {
+            sepPos = line.find(':');
+        }
+        if (sepPos == string::npos) {
+            continue;
+        }
+
+        string key = Tools::ToLower(Tools::Trim(line.substr(0, sepPos)));
+        string value = Tools::ToUpper(Tools::Trim(line.substr(sepPos + 1)));
+        if ((key == "modeltype" || key == "model_type" || key == "model") && !value.empty()) {
+            return value;
+        }
+    }
+
+    return nullopt;
+}
+
+static optional<stringCfgType> LoadStringTable(const fs::path& filePath) {
+    ifstream fin(filePath);
+    if (!fin.is_open()) {
+        cerr << "Warning: failed to open " << filePath << endl;
+        return nullopt;
+    }
+
+    stringCfgType rows;
+    string line;
+    while (getline(fin, line)) {
+        line = Tools::Trim(line);
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        rows.push_back(Tools::SplitAndTrim(line, ',', true));
+    }
+
+    if (rows.empty()) {
+        cerr << "Warning: no valid data in " << filePath << endl;
+        return nullopt;
+    }
+    return rows;
+}
+
+static optional<stationTimeType> LoadIntTable(const fs::path& filePath) {
+    auto rows = LoadStringTable(filePath);
+    if (!rows.has_value()) {
+        return nullopt;
+    }
+
+    stationTimeType table;
+    table.reserve(rows->size());
+    try {
+        for (const auto& row : *rows) {
+            vector<int> vals;
+            vals.reserve(row.size());
+            for (const auto& token : row) {
+                vals.push_back(stoi(token));
+            }
+            table.push_back(vals);
+        }
+    } catch (const std::exception& e) {
+        cerr << "Warning: invalid integer table in " << filePath << " - " << e.what() << endl;
+        return nullopt;
+    }
+
+    return table;
+}
+
+static optional<linkTimeType> LoadLinkDistance(const fs::path& filePath) {
+    auto rows = LoadStringTable(filePath);
+    if (!rows.has_value()) {
+        return nullopt;
+    }
+
+    linkTimeType links;
+    try {
+        for (const auto& row : *rows) {
+            if (row.size() < 3) {
+                continue;
+            }
+            int from = stoi(row[0]);
+            int to = stoi(row[1]);
+            double dist = stod(row[2]);
+            links[from][to] = dist;
+        }
+    } catch (const std::exception& e) {
+        cerr << "Warning: invalid link table in " << filePath << " - " << e.what() << endl;
+        return nullopt;
+    }
+
+    if (links.empty()) {
+        cerr << "Warning: no valid links in " << filePath << endl;
+        return nullopt;
+    }
+    return links;
+}
+
 inline bool isSupportStaticWireless(const string& modelType) {
     return modelType == "M2" || modelType == "M4";
 }
@@ -35,12 +152,77 @@ inline bool isSupportDynamicWireless(const string& modelType) {
     return modelType == "M3" || modelType == "M4";
 }
 
+inline bool isValidModelType(const string& modelType) {
+    return modelType == "M1" || modelType == "M2" || modelType == "M3" || modelType == "M4";
+}
+
 inline double getSoH(const int& y, const vector<double>& batteryDegradation) {
     double soh = 1.0;
     for (int i = 0; i < y && i < batteryDegradation.size(); ++i) {
         soh *= (1 - batteryDegradation[i]);
     }
     return soh;
+}
+
+WirelessChargingDataInitializationStrategy_Solver::WirelessChargingDataInitializationStrategy_Solver(
+    std::string dataFolder)
+    : dataFolder(std::move(dataFolder)) {}
+
+void WirelessChargingDataInitializationStrategy_Solver::DataInit(ProblemData& data)
+{
+    fs::path dataFolderPath = ResolveDataFolderPath(dataFolder);
+    auto configuredModelType = LoadModelTypeFromConfig(dataFolderPath / "config.txt");
+    if (!configuredModelType.has_value()) {
+        throw std::invalid_argument(
+            "Wireless model type is missing. Please set modelType in config.txt");
+    }
+    std::string normalizedModelType = configuredModelType.value();
+
+    if (!isValidModelType(normalizedModelType)) {
+        throw std::invalid_argument("Unsupported wireless model type: " + normalizedModelType);
+    }
+
+    auto dis = LoadLinkDistance(dataFolderPath / "linkDistance.txt");
+    auto tripArr = LoadIntTable(dataFolderPath / "tripArrTimes.txt");
+    auto tripDep = LoadIntTable(dataFolderPath / "tripDepTimes.txt");
+    auto tripStations = LoadIntTable(dataFolderPath / "tripStations.txt");
+    auto misc = LoadStringTable(dataFolderPath / "miscCfg.txt");
+
+    if (!dis.has_value() || !tripArr.has_value() || !tripDep.has_value() || !tripStations.has_value() || !misc.has_value()) {
+        throw std::runtime_error("Failed to read wireless charging input files from: " + dataFolderPath.string());
+    }
+
+    data.addData("wireless_model_type", normalizedModelType);
+    data.addData("wireless_data_folder", dataFolder);
+    data.addData("wireless_station_trip_count", static_cast<int>(tripStations->size()));
+
+    std::cout << "Loaded wireless charging data from file." << std::endl;
+    std::cout << "modelType=" << normalizedModelType << ", tripCount=" << tripStations->size() << std::endl;
+}
+
+Status WirelessChargingDataInitializationStrategy_Solver::SolveWithStandardInterface(const ProblemData& data)
+{
+    const auto& loadedModelType = data.getData<std::string>("wireless_model_type");
+    const auto& loadedDataFolder = data.getData<std::string>("wireless_data_folder");
+
+    bool ok = SolveWithGurobiWirelessChargingStratgies(loadedModelType, loadedDataFolder);
+    if (!ok) {
+        std::cerr << "Wireless charging solve failed." << std::endl;
+        return ERROR;
+    }
+
+    fs::path summaryPath = ResolveDataFolderPath(loadedDataFolder) / loadedModelType / "summary.txt";
+    if (fs::exists(summaryPath)) {
+        std::ifstream fin(summaryPath);
+        std::string line;
+        while (std::getline(fin, line)) {
+            if (line.rfind("objective:", 0) == 0 || line.rfind("totalCost:", 0) == 0) {
+                std::cout << line << std::endl;
+            }
+        }
+    }
+
+    return OK;
 }
 
 struct OperationCfg {
@@ -96,8 +278,8 @@ struct NetworkCfg {
 
 class ModelData {
 public:
-    ModelData(string dataFolder, double subsidy = 0.0, double socRangeChange = 0.0)
-        : subsidy(subsidy), socRangeChange(socRangeChange), dataFolder(std::move(dataFolder)), dataFolderPath(fs::path(get_absolute_path(__FILE__, this->dataFolder))) {
+    ModelData(string dataFolder)
+        : dataFolder(std::move(dataFolder)), dataFolderPath(ResolveDataFolderPath(this->dataFolder)) {
         Init();
     }
     ~ModelData() = default;
@@ -124,18 +306,11 @@ private:
     struct ChargerCfg chargerCfg;
     struct SchedulingCfg schedulingCfg;
     struct NetworkCfg networkCfg;
-    double subsidy = 0.0;
-    double socRangeChange = 0.0;
     string dataFolder;
     fs::path dataFolderPath;
 
     fs::path Resolve(const string& file) const {
         return dataFolderPath / file;
-    }
-
-    template <typename T>
-    std::optional<T> LoadConfig(const string& file) const {
-        return ParseFile<T>(Resolve(file).string());
     }
 
     void Init() {
@@ -151,10 +326,10 @@ private:
     }
 
     bool LoadConfigFromTxt() {
-        auto tmpDis = LoadConfig<linkTimeType>("linkDistance.txt");
-        auto tmpTripArrTimes = LoadConfig<stationTimeType>("tripArrTimes.txt");
-        auto tmpTripDepTimes = LoadConfig<stationTimeType>("tripDepTimes.txt");
-        auto tmpTripStations = LoadConfig<stationType>("tripStations.txt");
+        auto tmpDis = LoadLinkDistance(Resolve("linkDistance.txt"));
+        auto tmpTripArrTimes = LoadIntTable(Resolve("tripArrTimes.txt"));
+        auto tmpTripDepTimes = LoadIntTable(Resolve("tripDepTimes.txt"));
+        auto tmpTripStations = LoadIntTable(Resolve("tripStations.txt"));
         if (tmpDis.has_value()) {
             networkCfg.linkDistances = *tmpDis;
         }
@@ -168,7 +343,7 @@ private:
             schedulingCfg.stationTrips = *tmpTripStations;
         }
 
-        auto tmpMiscCfg = LoadConfig<stringCfgType>("miscCfg.txt"); // TODO:名称过长
+        auto tmpMiscCfg = LoadStringTable(Resolve("miscCfg.txt")); // TODO:名称过长
         if (tmpMiscCfg.has_value()) {
             vector<string> operationCfgDouble = tmpMiscCfg->at(OFFSET_OPERATION_CFG);
             vector<string> operationCfgInt = tmpMiscCfg->at(OFFSET_OPERATION_CFG + 1);
@@ -180,13 +355,6 @@ private:
             operationCfg.priceOfUnitBat = stod(operationCfgDouble[2]);
             operationCfg.socMax = stod(operationCfgDouble[3]);
             operationCfg.socMin = stod(operationCfgDouble[4]);
-            if (subsidy != 0.0) {
-                operationCfg.priceOfPowerDay *= (1.0 - subsidy);
-            }
-            if (socRangeChange != 0.0) {
-                operationCfg.socMax -= socRangeChange;
-                operationCfg.socMin -= socRangeChange;
-            }
             operationCfg.capacityMin = stod(operationCfgDouble[5]);
             operationCfg.capacityMax = stod(operationCfgDouble[6]);
             operationCfg.timeMin = stoi(operationCfgInt[0]);
@@ -251,9 +419,9 @@ private:
     }
 };
 
-static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& modelType, const string& dataFolder, bool allowWarmStart, bool allowOutputSolution, double givenGap = 0.01, double givenTime = 1800.0, double subsidy = 0.0, double socRangeChange = 0.0, const string& runSuffix = "") {
+static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& modelType, const string& dataFolder, bool allowWarmStart, bool allowOutputSolution, double givenGap = 0.01, double givenTime = 1800.0) {
     auto timeRecordStart = chrono::high_resolution_clock::now();
-    unique_ptr<ModelData> data = make_unique<ModelData>(dataFolder, subsidy, socRangeChange);
+    unique_ptr<ModelData> data = make_unique<ModelData>(dataFolder);
     auto timeRecordFinishDataInit = chrono::high_resolution_clock::now();
 
     OperationCfg operationCfg = data->GetOperationCfg();
@@ -261,7 +429,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     SchedulingCfg schedulingCfg = data->GetSchedulingCfg();
     NetworkCfg networkCfg = data->GetNetworkCfg();
     fs::path dataFolderPath = data->GetDataFolderPath();
-    string runId = runSuffix.empty() ? modelType : (modelType + runSuffix);
+    string runId = modelType;
     fs::path resultDir = dataFolderPath / runId;
     fs::create_directories(resultDir);
     fs::path solutionPath = resultDir / "solution.sol";
@@ -1312,17 +1480,18 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
         cout << "求解失败，模型不可行，获取ilp中" << endl;
         model.computeIIS();
         model.write("model_iis.ilp");
+        return false;
     } else{
         cout << "求解失败，状态码：" << solveStatus << endl;
         return false;
     }
 }
 
-static bool SolveWithGurobiWirelessChargingStratgiesOnce(const string& modelType, const string& dataFolder, double subsidy, double socRangeChange, const string& runSuffix = "") {
+bool SolveWithGurobiWirelessChargingStratgies(const string& modelType, const string& dataFolder) {
     double givenGap = 0.02;
     double givenTime = 18000.0;
-    fs::path dataFolderPath = fs::path(get_absolute_path(__FILE__, dataFolder));
-    string runId = runSuffix.empty() ? modelType : (modelType + runSuffix);
+    fs::path dataFolderPath = ResolveDataFolderPath(dataFolder);
+    string runId = modelType;
     fs::path resultDir = dataFolderPath / runId;
     fs::create_directories(resultDir);
 
@@ -1331,15 +1500,5 @@ static bool SolveWithGurobiWirelessChargingStratgiesOnce(const string& modelType
         fs::remove(logPath);
     }
 
-    fs::path coutLogPath = resultDir / "stdout_log.txt";
-    if (fs::exists(coutLogPath)) {
-        fs::remove(coutLogPath);
-    }
-    CoutRedirectGuard coutRedirect(coutLogPath);
-
-    return SolveWithGurobiWirelessChargingStratgiesInternal(modelType, dataFolder, true, true, givenGap, givenTime, subsidy, socRangeChange, runSuffix);
-}
-
-bool SolveWithGurobiWirelessChargingStratgies(const string& modelType, const string& dataFolder) {
-    return SolveWithGurobiWirelessChargingStratgiesOnce(modelType, dataFolder, 0.0, 0.0);
+    return SolveWithGurobiWirelessChargingStratgiesInternal(modelType, dataFolder, true, true, givenGap, givenTime);
 }

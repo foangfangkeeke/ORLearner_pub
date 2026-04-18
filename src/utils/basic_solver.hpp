@@ -13,6 +13,7 @@ enum ProblemType {
     CUTTINGSTOCK,
     FCTP,
     BARP_S,
+    WIRELESS_CHARGING,
     DEFAULT = 0x100,
 };
 

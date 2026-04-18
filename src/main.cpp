@@ -36,7 +36,7 @@ int main(int argc, char* argv[]) {
     }
     if (showHelp) {
         cout << "basic usage: " << endl;
-        cout << "  " << argv[0] << " --alg solver --pb wirelesschargingstratgies --desc m1 --data test" << endl;
+        cout << "  " << argv[0] << " --alg solver --pb wirelesschargingstratgies --data test" << endl;
         return 0;
     }
 
@@ -88,8 +88,7 @@ int main(int argc, char* argv[]) {
         } else if (pbLower == "barp_s" || pbLower == "barp" || pbLower == "barps" || pbLower == "brs_allocation_and_rescheduling_train_timetables") {
             problemType = BARP_S;
         } else if (pbLower == "wirelesschargingstratgies") {
-            SolveWithGurobiWirelessChargingStratgies("M4", dataType + "_data");
-            return 0;
+            problemType = WIRELESS_CHARGING;
         } else {
             err = true;
         }
@@ -100,6 +99,7 @@ int main(int argc, char* argv[]) {
         }
 
         MILPSolver solver;
+        string dataFolder = dataType + "_data";
 
         if (algLower == "cg") { // TODO: 直接算法名传进去更好
             solver.SetAlgorithm(std::make_unique<ColumnGeneration>(problemType));
@@ -110,7 +110,7 @@ int main(int argc, char* argv[]) {
         } else if (algLower == "benders" || algLower == "bd") {
             solver.SetAlgorithm(std::make_unique<BendersDecomposition>(problemType));
         } else {
-            solver.SetAlgorithm(std::make_unique<UsingSolver>(problemType));
+            solver.SetAlgorithm(std::make_unique<UsingSolver>(problemType, dataFolder));
         }
         try {
             solver.Run();

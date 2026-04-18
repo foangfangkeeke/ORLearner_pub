@@ -11,6 +11,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/problem/test_problem
     ${CMAKE_CURRENT_SOURCE_DIR}/problem/fixed_charge_transportation_problem
     ${CMAKE_CURRENT_SOURCE_DIR}/problem/BARP
+    ${CMAKE_CURRENT_SOURCE_DIR}/problem/wireless_charge_bus
     ${GUROBI_INCLUDE_DIR}
 )
 

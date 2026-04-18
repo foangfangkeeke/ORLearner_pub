@@ -4,6 +4,7 @@
 #include "benders_decomposition.hpp"
 #include "barp_s_integer_l_shaped.hpp"
 #include "tools.hpp"
+#include "wireless_charging_strategies.hpp"
 
 #include <iostream>
 #include <fstream>
@@ -43,9 +44,6 @@ int main(int argc, char* argv[]) {
     string pb = "unsigned";
     string desc = "unsigned";
     string dataType = "test";
-    bool ifIter = true;
-    bool sweepSubsidy = false;
-    bool sweepSocRangeChange = false;
     for (int i = 1; i < argc; ++i) {
         string arg = argv[i];
         if (arg == "--alg" && i + 1 < argc) {
@@ -89,6 +87,9 @@ int main(int argc, char* argv[]) {
             problemType = FCTP;
         } else if (pbLower == "barp_s" || pbLower == "barp" || pbLower == "barps" || pbLower == "brs_allocation_and_rescheduling_train_timetables") {
             problemType = BARP_S;
+        } else if (pbLower == "wirelesschargingstratgies") {
+            SolveWithGurobiWirelessChargingStratgies("M4", dataType + "_data");
+            return 0;
         } else {
             err = true;
         }

@@ -12,18 +12,22 @@
 #include <tuple>
 
 static const std::map<ProblemType,
-                      std::tuple<std::function<std::unique_ptr<IDataInitializationStrategy_Benders>()>,
+                      std::tuple<std::function<std::unique_ptr<IDataInitializationStrategy_Benders>(const std::string&)>,
                                  std::function<std::unique_ptr<ISubProblemStrategy_Benders>()>>> strategyMap = {
     {
         FCTP,
         std::make_tuple(
-            []() { return std::make_unique<FCTPDataInitializationStrategy_Benders>(); },
+            [](const std::string& dataFolder) {
+                return std::make_unique<FCTPDataInitializationStrategy_Benders>(dataFolder);
+            },
             []() { return std::make_unique<FCTPSubProblemStrategy_Benders>(); })
     },
     {
         BARP_S,
         std::make_tuple(
-            []() { return std::make_unique<BRSDataInitializationStrategy_Benders>(); },
+            [](const std::string& dataFolder) {
+                return std::make_unique<BRSDataInitializationStrategy_Benders>(dataFolder);
+            },
             []() { return std::make_unique<BRSSubProblemStrategy_Benders>(); })
     }
 };
@@ -73,7 +77,7 @@ Status BendersDecomposition::Initialize()
     }
 
     const auto& strategies = it->second;
-    dataIniter = std::get<0>(strategies)();
+    dataIniter = std::get<0>(strategies)(dataFolder);
     sub = std::make_unique<BendersSubSolver>(std::get<1>(strategies)());
 
     dataIniter->DataInit(*problemData);
@@ -213,8 +217,9 @@ Status BendersDecomposition::Solve()
     return ERROR;
 }
 
-BendersDecomposition::BendersDecomposition(ProblemType problemType, int maxIters, double tol)
+BendersDecomposition::BendersDecomposition(ProblemType problemType, std::string dataFolder, int maxIters, double tol)
     : problemType(problemType),
+      dataFolder(dataFolder),
       maxIters(maxIters),
       tolerance(tol),
       bestUpperBound(std::numeric_limits<double>::infinity()),

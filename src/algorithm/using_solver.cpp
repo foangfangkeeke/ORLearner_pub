@@ -17,14 +17,14 @@
 static const std::map<
     ProblemType,
     std::function<std::unique_ptr<IDataInitializationStrategy_Solver>(const std::string&)>> dataInitMap = {
-    {TEST, [](const std::string&) {
-        return std::make_unique<TestDataInitializationStrategy_Solver>(); }},
-    {CUTTINGSTOCK, [](const std::string&) {
-        return std::make_unique<CuttingStockDataInitializationStrategy_Solver>(); }},
-    {FCTP, [](const std::string&) {
-        return std::make_unique<FCTPDataInitializationStrategy_Solver>(); }},
-    {BARP_S, [](const std::string&) {
-        return std::make_unique<BRSDataInitializationStrategy_Solver>(); }},
+    {TEST, [](const std::string& dataFolder) {
+        return std::make_unique<TestDataInitializationStrategy_Solver>(dataFolder); }},
+    {CUTTINGSTOCK, [](const std::string& dataFolder) {
+        return std::make_unique<CuttingStockDataInitializationStrategy_Solver>(dataFolder); }},
+    {FCTP, [](const std::string& dataFolder) {
+        return std::make_unique<FCTPDataInitializationStrategy_Solver>(dataFolder); }},
+    {BARP_S, [](const std::string& dataFolder) {
+        return std::make_unique<BRSDataInitializationStrategy_Solver>(dataFolder); }},
     {WIRELESS_CHARGING, [](const std::string& dataFolder){
         return std::make_unique<WirelessChargingDataInitializationStrategy_Solver>(dataFolder);
     }}
@@ -90,10 +90,6 @@ Status UsingSolver::Solve()
 }
 
 UsingSolver::UsingSolver(ProblemType problemType, std::string dataFolder)
-    : problemType(problemType), dataFolder(std::move(dataFolder)) {
-    if (this->dataFolder.empty()) {
-        this->dataFolder = "test_data";
-    }
-};
+    : problemType(problemType), dataFolder(dataFolder) {};
 
 UsingSolver::~UsingSolver() {};

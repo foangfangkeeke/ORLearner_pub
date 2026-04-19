@@ -349,9 +349,7 @@ private:
     }
 
     void Init() {
-        std::cout << __FILE__ << "," << __LINE__ << std::endl;
         LoadConfigFromTxt();
-        std::cout << __FILE__ << "," << __LINE__ << std::endl;
 
         for (const auto& stationTrip : schedulingCfg.stationTrips) {
             for (int station : stationTrip) {

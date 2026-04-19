@@ -15,14 +15,16 @@
 #include <vector>
 
 namespace {
-using DataInitFactory = std::function<std::unique_ptr<IDataInitializationStrategy_Benders>()>;
+using DataInitFactory = std::function<std::unique_ptr<IDataInitializationStrategy_Benders>(const std::string&)>;
 using SubFactory = std::function<std::unique_ptr<ISubProblemStrategy_Benders>()>;
 
 static const std::map<ProblemType, std::tuple<DataInitFactory, SubFactory>> kStrategyMap = {
     {
         BARP_S,
         std::make_tuple(
-            []() { return std::make_unique<BRSDataInitializationStrategy_Benders>(); },
+            [](const std::string& dataFolder) {
+                return std::make_unique<BRSDataInitializationStrategy_Benders>(dataFolder);
+            },
             []() { return std::make_unique<BRSSubProblemStrategy_Benders>(); })
     }
 };
@@ -105,8 +107,8 @@ Status EvaluateIntegerSubproblem(const ProblemData& problemData, ISubProblemStra
 }
 }
 
-BARPSIntegerLShaped::BARPSIntegerLShaped(ProblemType problemType, int maxIters, double tol)
-    : problemType(problemType), maxIters(maxIters), tolerance(tol), globalLowerBound(0.0),
+BARPSIntegerLShaped::BARPSIntegerLShaped(ProblemType problemType, std::string dataFolder, int maxIters, double tol)
+    : problemType(problemType), dataFolder(dataFolder), maxIters(maxIters), tolerance(tol), globalLowerBound(0.0),
         bestUpperBound(std::numeric_limits<double>::infinity()),
         bestLowerBound(-std::numeric_limits<double>::infinity()),
         incumbentSecondStageValue(std::numeric_limits<double>::infinity())
@@ -125,7 +127,7 @@ Status BARPSIntegerLShaped::Initialize()
         throw std::invalid_argument("Unsupported problem type for integer L-shaped framework");
     }
 
-    dataIniter = std::get<0>(it->second)();
+    dataIniter = std::get<0>(it->second)(dataFolder);
     subProblemStrategy = std::get<1>(it->second)();
     if (!subProblemStrategy) {
         throw std::invalid_argument("Sub-problem strategy cannot be null");

@@ -102,13 +102,13 @@ int main(int argc, char* argv[]) {
         string dataFolder = dataType + "_data";
 
         if (algLower == "cg") { // TODO: 直接算法名传进去更好
-            solver.SetAlgorithm(std::make_unique<ColumnGeneration>(problemType));
+            solver.SetAlgorithm(std::make_unique<ColumnGeneration>(problemType, dataFolder));
         } else if (algLower == "bp") {
-            solver.SetAlgorithm(std::make_unique<BranchAndPrice>(problemType));
+            solver.SetAlgorithm(std::make_unique<BranchAndPrice>(problemType, dataFolder));
         } else if (algLower == "lshape" || algLower == "lshaped") {
-            solver.SetAlgorithm(std::make_unique<BARPSIntegerLShaped>(problemType));
+            solver.SetAlgorithm(std::make_unique<BARPSIntegerLShaped>(problemType, dataFolder));
         } else if (algLower == "benders" || algLower == "bd") {
-            solver.SetAlgorithm(std::make_unique<BendersDecomposition>(problemType));
+            solver.SetAlgorithm(std::make_unique<BendersDecomposition>(problemType, dataFolder));
         } else {
             solver.SetAlgorithm(std::make_unique<UsingSolver>(problemType, dataFolder));
         }

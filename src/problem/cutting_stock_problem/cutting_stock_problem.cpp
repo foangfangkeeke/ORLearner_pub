@@ -14,9 +14,10 @@
 #include <stdexcept>
 
 namespace {
-bool LoadCuttingStockData(int& stockLength, std::vector<int>& itemLengths, std::vector<int>& demands)
+bool LoadCuttingStockData(const std::string& dataFolder, int& stockLength, std::vector<int>& itemLengths, std::vector<int>& demands)
 {
-    const std::filesystem::path dataPath = std::filesystem::path(__FILE__).parent_path() / "cutting_stock_input.txt";
+    const std::filesystem::path dataPath =
+        std::filesystem::path(__FILE__).parent_path() / dataFolder / "cutting_stock_input.txt";
     std::ifstream fin(dataPath);
     if (!fin.is_open()) {
         std::cerr << "Warning: failed to open " << dataPath << ", using defaults." << std::endl;
@@ -66,6 +67,14 @@ bool LoadCuttingStockData(int& stockLength, std::vector<int>& itemLengths, std::
     return true;
 }
 } // namespace
+
+CuttingStockDataInitializationStrategy_CG::CuttingStockDataInitializationStrategy_CG(std::string dataFolder)
+    : dataFolder(dataFolder)
+{}
+
+CuttingStockDataInitializationStrategy_Solver::CuttingStockDataInitializationStrategy_Solver(std::string dataFolder)
+    : dataFolder(dataFolder)
+{}
 
 void CuttingStockSubProblemStrategy::InitPatterns(const ProblemData& problemData, std::queue<PatternWithInfo>& bfsQueue,
         std::set<PatternWithInfo>& processedPatterns, std::vector<PatternWithInfo>& paretoSet)
@@ -118,7 +127,7 @@ void CuttingStockDataInitializationStrategy_CG::DataInit(ProblemData& problemDat
     std::vector<int> itemLengths;
     std::vector<int> demands;
 
-    if (!LoadCuttingStockData(stockLength, itemLengths, demands)) {
+    if (!LoadCuttingStockData(dataFolder, stockLength, itemLengths, demands)) {
         throw std::runtime_error("Failed to load cutting stock data from file.");
     }
 
@@ -179,7 +188,7 @@ void CuttingStockDataInitializationStrategy_Solver::DataInit(ProblemData& proble
     std::vector<int> itemLengths;
     std::vector<int> demands;
 
-    if (!LoadCuttingStockData(stockLength, itemLengths, demands)) {
+    if (!LoadCuttingStockData(dataFolder, stockLength, itemLengths, demands)) {
         throw std::runtime_error("Failed to load cutting stock data from file.");
     }
 

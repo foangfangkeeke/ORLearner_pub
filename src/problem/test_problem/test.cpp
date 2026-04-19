@@ -16,14 +16,15 @@
 using namespace std;
 
 namespace {
-bool LoadTestData(vector<ProblemDataVar>& vars, vector<ProblemDataConstr>& constrs, int& obj)
+bool LoadTestData(const std::string& dataFolder, vector<ProblemDataVar>& vars, vector<ProblemDataConstr>& constrs, int& obj)
 {
     vars.clear();
     constrs.clear();
     obj = 0;
 
     try {
-        const std::filesystem::path dataPath = std::filesystem::path(__FILE__).parent_path() / "test_input.txt";
+        const std::filesystem::path dataPath =
+            std::filesystem::path(__FILE__).parent_path() / dataFolder / "test_input.txt";
         std::ifstream stream(dataPath);
         std::string line;
 
@@ -72,13 +73,17 @@ bool LoadTestData(vector<ProblemDataVar>& vars, vector<ProblemDataConstr>& const
 }
 } // namespace
 
+TestDataInitializationStrategy_Solver::TestDataInitializationStrategy_Solver(std::string dataFolder)
+    : dataFolder(dataFolder)
+{}
+
 void TestDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
 {
     vector<ProblemDataVar> vars;
     vector<ProblemDataConstr> constrs;
     int obj;
 
-    if (LoadTestData(vars, constrs, obj)) {
+    if (LoadTestData(dataFolder, vars, constrs, obj)) {
         throw std::runtime_error("Failed to load test data from file.");
     }
 

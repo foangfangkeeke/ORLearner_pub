@@ -24,13 +24,21 @@ struct BRSArcData {
 
 class BRSDataInitializationStrategy_Solver : public IDataInitializationStrategy_Solver {
 public:
+    explicit BRSDataInitializationStrategy_Solver(std::string dataFolder = "test_data");
     void DataInit(ProblemData& problemData) override;
+
+private:
+    std::string dataFolder;
 };
 
 class BRSDataInitializationStrategy_Benders : public IDataInitializationStrategy_Benders {
 public:
+    explicit BRSDataInitializationStrategy_Benders(std::string dataFolder = "test_data");
     void DataInit(ProblemData& problemData) override;
     std::vector<ProblemDataConstr> ConstrInit(ProblemData& problemData) override;
+
+private:
+    std::string dataFolder;
 };
 
 class BRSSubProblemStrategy_Benders : public ISubProblemStrategy_Benders {

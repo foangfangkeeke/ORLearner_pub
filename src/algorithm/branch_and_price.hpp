@@ -13,8 +13,8 @@ struct BranchNode {
     int nodeId;
     std::shared_ptr<BranchNode> parent;
 
-    BranchNode(ProblemType type): 
-        cgSolver(std::make_unique<ColumnGeneration>(type)),
+    BranchNode(ProblemType type, const std::string& dataFolder): 
+        cgSolver(std::make_unique<ColumnGeneration>(type, dataFolder)),
         lowerBound(0.0), upperBound(INFINITY),
         isInteger(false), nodeId(0), parent(nullptr) {}
 
@@ -26,13 +26,14 @@ struct BranchNode {
 
 class BranchAndPrice : public IMILPAlgorithmStrategy {
 public:
-    BranchAndPrice(ProblemType problemType);
+    BranchAndPrice(ProblemType problemType, std::string dataFolder = "test_data");
     Status Initialize();
     Status Solve();
     ~BranchAndPrice();
 
 private:
     ProblemType problemType;
+    std::string dataFolder;
     std::queue<std::shared_ptr<BranchNode>> nodeQueue;
     double globalUpperBound = INFINITY;
     int nextNodeId = 0;

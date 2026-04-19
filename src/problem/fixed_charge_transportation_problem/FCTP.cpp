@@ -21,12 +21,14 @@ constexpr const char* kVarGroupW = "w";
 constexpr const char* kConstrGroupDualCap = "dual_cap";
 
 bool LoadFCTPData(
+    const std::string& dataFolder,
     vector<int>& supplys,
     vector<int>& demands,
     vector<vector<int>>& transCosts,
     vector<vector<int>>& fixedCharges)
 {
-    const std::filesystem::path dataPath = std::filesystem::path(__FILE__).parent_path() / "FCTP.txt";
+    const std::filesystem::path dataPath =
+        std::filesystem::path(__FILE__).parent_path() / dataFolder / "FCTP.txt";
     ifstream fin(dataPath);
     if (!fin.is_open()) {
         cerr << "Warning: failed to open " << dataPath << endl;
@@ -121,6 +123,14 @@ bool LoadFCTPData(
 }
 } // namespace
 
+FCTPDataInitializationStrategy_Solver::FCTPDataInitializationStrategy_Solver(std::string dataFolder)
+    : dataFolder(dataFolder)
+{}
+
+FCTPDataInitializationStrategy_Benders::FCTPDataInitializationStrategy_Benders(std::string dataFolder)
+    : dataFolder(dataFolder)
+{}
+
 void FCTPDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
 {
     vector<int> supplys;
@@ -128,7 +138,7 @@ void FCTPDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
     vector<vector<int>> transCosts;
     vector<vector<int>> fixedCharges;
 
-    if (!LoadFCTPData(supplys, demands, transCosts, fixedCharges)) {
+    if (!LoadFCTPData(dataFolder, supplys, demands, transCosts, fixedCharges)) {
         throw std::runtime_error("Failed to load FCTP data from file.");
     }
 
@@ -230,7 +240,7 @@ void FCTPDataInitializationStrategy_Benders::DataInit(ProblemData& problemData)
     vector<vector<int>> transCosts;
     vector<vector<int>> fixedCharges;
 
-    if (!LoadFCTPData(supplys, demands, transCosts, fixedCharges)) {
+    if (!LoadFCTPData(dataFolder, supplys, demands, transCosts, fixedCharges)) {
         throw std::runtime_error("Failed to load FCTP data from file.");
     }
 

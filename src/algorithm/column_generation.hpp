@@ -83,7 +83,7 @@ public:
 
 class ColumnGeneration : public IMILPAlgorithmStrategy {
 public:
-    ColumnGeneration(ProblemType problemType, int maxIters=100, double tol=1e-6);
+    ColumnGeneration(ProblemType problemType, std::string dataFolder = "test_data", int maxIters=100, double tol=1e-6);
     Status Initialize();
     Status Solve();
     std::shared_ptr<GRBModel> GetModel() const { return model; }
@@ -91,6 +91,7 @@ public:
 
     ColumnGeneration(const ColumnGeneration& other) {
         this->problemType = other.problemType;
+        this->dataFolder = other.dataFolder;
         this->maxIters = other.maxIters;
         this->tolerance = other.tolerance;
         this->initialized = other.initialized;
@@ -109,6 +110,7 @@ public:
 
 private:
     ProblemType problemType;
+    std::string dataFolder;
     int maxIters;
     double tolerance;
 

@@ -18,11 +18,19 @@ public:
 
 class CuttingStockDataInitializationStrategy_CG : public IDataInitializationStrategy_CG {
 public:
+    explicit CuttingStockDataInitializationStrategy_CG(std::string dataFolder = "test_data");
     void DataInit(ProblemData& problemData) override;
     std::vector<Constraint> ConstrInit(ProblemData& problemData) override;
+
+private:
+    std::string dataFolder;
 };
 
 class CuttingStockDataInitializationStrategy_Solver : public IDataInitializationStrategy_Solver {
 public:
+    explicit CuttingStockDataInitializationStrategy_Solver(std::string dataFolder = "test_data");
     void DataInit(ProblemData& problemData) override;
+
+private:
+    std::string dataFolder;
 };

@@ -14,7 +14,7 @@ class GRBVar;
 
 class BARPSIntegerLShaped : public IMILPAlgorithmStrategy {
 public:
-    BARPSIntegerLShaped(ProblemType problemType, int maxIters = 100, double tol = 1e-6);
+    BARPSIntegerLShaped(ProblemType problemType, std::string dataFolder = "test_data", int maxIters = 100, double tol = 1e-6);
     Status Initialize() override;
     Status Solve() override;
     ~BARPSIntegerLShaped() override;
@@ -39,6 +39,7 @@ private:
     void PrintBestSolution() const;
 
     ProblemType problemType;
+    std::string dataFolder;
     int maxIters;
     double tolerance;
 

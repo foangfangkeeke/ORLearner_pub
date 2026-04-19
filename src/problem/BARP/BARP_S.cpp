@@ -45,10 +45,10 @@ const std::string& RequireKey(
     return it->second;
 }
 
-BRSRawInput LoadBRSInput()
+BRSRawInput LoadBRSInput(const std::string& dataFolder)
 {
     const std::filesystem::path dataPath =
-        std::filesystem::path(__FILE__).parent_path() / "brs_small_case.txt";
+        std::filesystem::path(__FILE__).parent_path() / dataFolder / "brs_small_case.txt";
 
     std::ifstream fin(dataPath);
     if (!fin.is_open()) {
@@ -204,10 +204,18 @@ void AppendTravelArcs(const BRSRawInput& input, std::vector<BRSArcData>& arcs)
 
 } // namespace
 
+BRSDataInitializationStrategy_Solver::BRSDataInitializationStrategy_Solver(std::string dataFolder)
+    : dataFolder(dataFolder)
+{}
+
+BRSDataInitializationStrategy_Benders::BRSDataInitializationStrategy_Benders(std::string dataFolder)
+    : dataFolder(dataFolder)
+{}
+
 
 void BRSDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
 {
-    BRSRawInput input = LoadBRSInput();
+    BRSRawInput input = LoadBRSInput(dataFolder);
 
     std::vector<int> storageStations;
     std::vector<double> storageCosts;
@@ -571,7 +579,7 @@ void BRSDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
 
 void BRSDataInitializationStrategy_Benders::DataInit(ProblemData& problemData)
 {
-    BRSRawInput input = LoadBRSInput();
+    BRSRawInput input = LoadBRSInput(dataFolder);
 
     std::vector<int> storageStations;
     std::vector<double> storageCosts;

@@ -5,8 +5,12 @@
 
 class FCTPDataInitializationStrategy_Benders : public IDataInitializationStrategy_Benders {
 public:
+    explicit FCTPDataInitializationStrategy_Benders(std::string dataFolder = "test_data");
     void DataInit(ProblemData& problemData) override;
     std::vector<ProblemDataConstr> ConstrInit(ProblemData& problemData) override;
+
+private:
+    std::string dataFolder;
 };
 
 class FCTPSubProblemStrategy_Benders : public ISubProblemStrategy_Benders {
@@ -37,5 +41,9 @@ public:
 
 class FCTPDataInitializationStrategy_Solver : public IDataInitializationStrategy_Solver {
 public:
+    explicit FCTPDataInitializationStrategy_Solver(std::string dataFolder = "test_data");
     void DataInit(ProblemData& problemData) override;
+
+private:
+    std::string dataFolder;
 };

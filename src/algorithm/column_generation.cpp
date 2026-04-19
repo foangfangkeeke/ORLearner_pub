@@ -11,12 +11,12 @@
 #include <map>
 
 static const std::map<ProblemType,
-                      std::tuple<std::function<std::unique_ptr<IDataInitializationStrategy_CG>()>,
+                      std::tuple<std::function<std::unique_ptr<IDataInitializationStrategy_CG>(const std::string&)>,
                                  std::function<std::unique_ptr<ISubProblemStrategy>()>>> strategyMap = {
     {
         CUTTINGSTOCK,
         std::make_tuple(
-            [](){return std::make_unique<CuttingStockDataInitializationStrategy_CG>();},
+            [](const std::string& dataFolder){return std::make_unique<CuttingStockDataInitializationStrategy_CG>(dataFolder);},
             [](){return std::make_unique<CuttingStockSubProblemStrategy>();})
     }
 };
@@ -165,7 +165,7 @@ Status ColumnGeneration::Initialize()
     }
     const auto& strategies = it->second;
 
-    dataIniter = std::get<0x0>(strategies)();
+    dataIniter = std::get<0x0>(strategies)(dataFolder);
     sub = std::make_unique<SubSolver>(std::get<0x1>(strategies)());
 
     dataIniter->DataInit(*problemData);
@@ -230,6 +230,8 @@ Status ColumnGeneration::Solve()
     return OK;
 }
 
-ColumnGeneration::ColumnGeneration(ProblemType problemType, int maxIters, double tol): problemType(problemType), maxIters(maxIters), tolerance(tol) {};
+ColumnGeneration::ColumnGeneration(ProblemType problemType, std::string dataFolder, int maxIters, double tol)
+    : problemType(problemType), dataFolder(dataFolder), maxIters(maxIters), tolerance(tol)
+{};
 
 ColumnGeneration::~ColumnGeneration() {};

@@ -164,6 +164,63 @@ inline double getSoH(const int& y, const vector<double>& batteryDegradation) {
     return soh;
 }
 
+static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& modelType, const string& dataFolder,
+    bool allowWarmStart, bool allowOutputSolution, double givenGap, double givenTime, bool buildProblemDataOnly,
+    vector<ProblemDataVar>* outVars, vector<ProblemDataConstr>* outConstrs, int* outObjSense);
+
+static bool ExtractProblemDataFromModel(GRBModel& model, vector<ProblemDataVar>& vars,
+    vector<ProblemDataConstr>& constrs, int& objSense)
+{
+    try {
+        model.update();
+
+        int numVars = model.get(GRB_IntAttr_NumVars);
+        int numConstrs = model.get(GRB_IntAttr_NumConstrs);
+        objSense = model.get(GRB_IntAttr_ModelSense);
+
+        GRBVar* grbVars = model.getVars();
+        GRBConstr* grbConstrs = model.getConstrs();
+
+        vars.clear();
+        vars.reserve(static_cast<size_t>(numVars));
+        for (int i = 0; i < numVars; ++i) {
+            ProblemDataVar var;
+            var.lb = grbVars[i].get(GRB_DoubleAttr_LB);
+            var.ub = grbVars[i].get(GRB_DoubleAttr_UB);
+            var.obj = grbVars[i].get(GRB_DoubleAttr_Obj);
+            var.type = grbVars[i].get(GRB_CharAttr_VType);
+            var.name = grbVars[i].get(GRB_StringAttr_VarName);
+            vars.push_back(var);
+        }
+
+        constrs.clear();
+        constrs.reserve(static_cast<size_t>(numConstrs));
+        for (int c = 0; c < numConstrs; ++c) {
+            ProblemDataConstr constr;
+            constr.coeffs.assign(static_cast<size_t>(numVars), 0.0);
+            constr.sense = grbConstrs[c].get(GRB_CharAttr_Sense);
+            constr.rhs = grbConstrs[c].get(GRB_DoubleAttr_RHS);
+            constr.name = grbConstrs[c].get(GRB_StringAttr_ConstrName);
+
+            for (int v = 0; v < numVars; ++v) {
+                double coeff = model.getCoeff(grbConstrs[c], grbVars[v]);
+                if (std::abs(coeff) > 1e-12) {
+                    constr.coeffs[static_cast<size_t>(v)] = coeff;
+                }
+            }
+
+            constrs.push_back(std::move(constr));
+        }
+
+        delete[] grbVars;
+        delete[] grbConstrs;
+        return true;
+    } catch (const GRBException& e) {
+        cerr << "Failed to extract wireless model to ProblemData: " << e.getMessage() << endl;
+        return false;
+    }
+}
+
 WirelessChargingDataInitializationStrategy_Solver::WirelessChargingDataInitializationStrategy_Solver(
     std::string dataFolder)
     : dataFolder(std::move(dataFolder)) {}
@@ -182,47 +239,25 @@ void WirelessChargingDataInitializationStrategy_Solver::DataInit(ProblemData& da
         throw std::invalid_argument("Unsupported wireless model type: " + normalizedModelType);
     }
 
-    auto dis = LoadLinkDistance(dataFolderPath / "linkDistance.txt");
-    auto tripArr = LoadIntTable(dataFolderPath / "tripArrTimes.txt");
-    auto tripDep = LoadIntTable(dataFolderPath / "tripDepTimes.txt");
-    auto tripStations = LoadIntTable(dataFolderPath / "tripStations.txt");
-    auto misc = LoadStringTable(dataFolderPath / "miscCfg.txt");
-
-    if (!dis.has_value() || !tripArr.has_value() || !tripDep.has_value() || !tripStations.has_value() || !misc.has_value()) {
-        throw std::runtime_error("Failed to read wireless charging input files from: " + dataFolderPath.string());
+    vector<ProblemDataVar> vars;
+    vector<ProblemDataConstr> constrs;
+    int objSense = GRB_MINIMIZE;
+    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(normalizedModelType, dataFolder, false, false, 0.02,
+        18000.0, true, &vars, &constrs, &objSense);
+    if (!built) {
+        throw std::runtime_error("Failed to build wireless charging vars/constrs from model.");
     }
 
+    data.addData("vars", vars);
+    data.addData("constrs", constrs);
+    data.addData("obj", objSense);
     data.addData("wireless_model_type", normalizedModelType);
     data.addData("wireless_data_folder", dataFolder);
-    data.addData("wireless_station_trip_count", static_cast<int>(tripStations->size()));
 
     std::cout << "Loaded wireless charging data from file." << std::endl;
-    std::cout << "modelType=" << normalizedModelType << ", tripCount=" << tripStations->size() << std::endl;
-}
-
-Status WirelessChargingDataInitializationStrategy_Solver::SolveWithStandardInterface(const ProblemData& data)
-{
-    const auto& loadedModelType = data.getData<std::string>("wireless_model_type");
-    const auto& loadedDataFolder = data.getData<std::string>("wireless_data_folder");
-
-    bool ok = SolveWithGurobiWirelessChargingStratgies(loadedModelType, loadedDataFolder);
-    if (!ok) {
-        std::cerr << "Wireless charging solve failed." << std::endl;
-        return ERROR;
-    }
-
-    fs::path summaryPath = ResolveDataFolderPath(loadedDataFolder) / loadedModelType / "summary.txt";
-    if (fs::exists(summaryPath)) {
-        std::ifstream fin(summaryPath);
-        std::string line;
-        while (std::getline(fin, line)) {
-            if (line.rfind("objective:", 0) == 0 || line.rfind("totalCost:", 0) == 0) {
-                std::cout << line << std::endl;
-            }
-        }
-    }
-
-    return OK;
+    std::cout << "modelType=" << normalizedModelType
+              << ", vars=" << vars.size()
+              << ", constrs=" << constrs.size() << std::endl;
 }
 
 struct OperationCfg {
@@ -419,7 +454,10 @@ private:
     }
 };
 
-static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& modelType, const string& dataFolder, bool allowWarmStart, bool allowOutputSolution, double givenGap = 0.01, double givenTime = 1800.0) {
+static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& modelType, const string& dataFolder,
+    bool allowWarmStart, bool allowOutputSolution, double givenGap, double givenTime, bool buildProblemDataOnly,
+    vector<ProblemDataVar>* outVars, vector<ProblemDataConstr>* outConstrs, int* outObjSense) {
+
     auto timeRecordStart = chrono::high_resolution_clock::now();
     unique_ptr<ModelData> data = make_unique<ModelData>(dataFolder);
     auto timeRecordFinishDataInit = chrono::high_resolution_clock::now();
@@ -444,7 +482,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
 
     GRBEnv env = GRBEnv(true);
     env.set("LogFile", logPath.string());
-    env.set(GRB_IntParam_OutputFlag, 1);
+    env.set(GRB_IntParam_OutputFlag, buildProblemDataOnly ? 0 : 1);
     env.start();
 
     GRBModel model = GRBModel(env);
@@ -1092,6 +1130,12 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     }
 
     model.update();
+    if (buildProblemDataOnly) {
+        if (outVars == nullptr || outConstrs == nullptr || outObjSense == nullptr) {
+            return false;
+        }
+        return ExtractProblemDataFromModel(model, *outVars, *outConstrs, *outObjSense);
+    }
     // if (allowWarmStart && fs::exists(solutionPath)) {
     //     try {
     //         model.read(solutionPath.string());
@@ -1487,18 +1531,3 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     }
 }
 
-bool SolveWithGurobiWirelessChargingStratgies(const string& modelType, const string& dataFolder) {
-    double givenGap = 0.02;
-    double givenTime = 18000.0;
-    fs::path dataFolderPath = ResolveDataFolderPath(dataFolder);
-    string runId = modelType;
-    fs::path resultDir = dataFolderPath / runId;
-    fs::create_directories(resultDir);
-
-    fs::path logPath = resultDir / "gurobi_log.txt";
-    if (fs::exists(logPath)) {
-        fs::remove(logPath);
-    }
-
-    return SolveWithGurobiWirelessChargingStratgiesInternal(modelType, dataFolder, true, true, givenGap, givenTime);
-}

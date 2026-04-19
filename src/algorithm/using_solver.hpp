@@ -13,11 +13,6 @@
 class IDataInitializationStrategy_Solver {
 public:
     virtual void DataInit(ProblemData& data) = 0;
-    virtual bool UseCustomSolver() const { return false; }
-    virtual Status SolveWithStandardInterface(const ProblemData& data) {
-        (void)data;
-        return ERROR;
-    }
     virtual ~IDataInitializationStrategy_Solver() = default;
 };
 

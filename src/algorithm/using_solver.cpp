@@ -42,11 +42,6 @@ Status UsingSolver::Initialize()
 
     dataIniter->DataInit(*problemData);
 
-    if (dataIniter->UseCustomSolver()) {
-        initialized = true;
-        return OK;
-    }
-
     env = std::make_unique<GRBEnv>(true);
     env->set("LogFile", "gurobi_log.txt");
     env->set(GRB_IntParam_OutputFlag, 0);
@@ -82,10 +77,6 @@ Status UsingSolver::Initialize()
 
 Status UsingSolver::Solve()
 {
-    if (dataIniter && dataIniter->UseCustomSolver()) {
-        return dataIniter->SolveWithStandardInterface(*problemData);
-    }
-
     model->optimize();
     int solveStatus = model->get(GRB_IntAttr_Status);
     if (solveStatus == GRB_OPTIMAL || (solveStatus == GRB_TIME_LIMIT && model->get(GRB_IntAttr_SolCount)>0)) {

@@ -1,6 +1,6 @@
 # OperationCfg
 # priceOfPowerDay,priceOfPowerNight,priceOfUnitBat,socMax,socMin,capacityMin,capacityMax
-1.0,0.2,1000,0.9,0.1,0,1000,10,80
+1.0,0.2,1000,0.9,0.1,10,80
 # timeMin,timeMax,timeInterval
 0,1440,1
 # curbWeight,energyPerWeright,mu,g

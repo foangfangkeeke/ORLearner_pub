@@ -1,6 +1,7 @@
 #include "benders_decomposition.hpp"
 #include "FCTP.hpp"
 #include "BARP_S.hpp"
+#include "wireless_charging_strategies.hpp"
 #include "tools.hpp"
 
 #include <algorithm>
@@ -29,6 +30,14 @@ static const std::map<ProblemType,
                 return std::make_unique<BRSDataInitializationStrategy_Benders>(dataFolder);
             },
             []() { return std::make_unique<BRSSubProblemStrategy_Benders>(); })
+    },
+    {
+        WIRELESS_CHARGING,
+        std::make_tuple(
+            [](const std::string& dataFolder) {
+                return std::make_unique<WirelessChargingDataInitializationStrategy_Benders>(dataFolder);
+            },
+            []() { return std::make_unique<WirelessChargingSubProblemStrategy_Benders>(); })
     }
 };
 

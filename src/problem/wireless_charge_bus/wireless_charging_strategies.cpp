@@ -31,6 +31,7 @@ using stationTimeType = vector<vector<int>>;
 using stationType = vector<vector<int>>;
 using stringCfgType = vector<vector<string>>;
 
+namespace {
 inline fs::path ResolveDataFolderPath(const string& dataFolder) {
     return fs::path(__FILE__).parent_path() / dataFolder;
 }
@@ -164,9 +165,20 @@ inline double getSoH(const int& y, const vector<double>& batteryDegradation) {
     return soh;
 }
 
-static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& modelType, const string& dataFolder,
-    bool allowWarmStart, bool allowOutputSolution, double givenGap, double givenTime, bool buildProblemDataOnly,
-    vector<ProblemDataVar>* outVars, vector<ProblemDataConstr>* outConstrs, int* outObjSense);
+constexpr const char* kWirelessVarGroupAllVars = "wireless_all_vars";
+
+static bool StartsWith(const string& value, const string& prefix)
+{
+    return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+}
+
+static bool IsWirelessMasterVarName(const string& varName)
+{
+    return StartsWith(varName, "E_choice_") ||
+           StartsWith(varName, "w_station_") ||
+           StartsWith(varName, "w_link_");
+}
+} // namespace
 
 static bool ExtractProblemDataFromModel(GRBModel& model, vector<ProblemDataVar>& vars,
     vector<ProblemDataConstr>& constrs, int& objSense)
@@ -219,45 +231,6 @@ static bool ExtractProblemDataFromModel(GRBModel& model, vector<ProblemDataVar>&
         cerr << "Failed to extract wireless model to ProblemData: " << e.getMessage() << endl;
         return false;
     }
-}
-
-WirelessChargingDataInitializationStrategy_Solver::WirelessChargingDataInitializationStrategy_Solver(
-    std::string dataFolder)
-    : dataFolder(std::move(dataFolder)) {}
-
-void WirelessChargingDataInitializationStrategy_Solver::DataInit(ProblemData& data)
-{
-    fs::path dataFolderPath = ResolveDataFolderPath(dataFolder);
-    auto configuredModelType = LoadModelTypeFromConfig(dataFolderPath / "config.txt");
-    if (!configuredModelType.has_value()) {
-        throw std::invalid_argument(
-            "Wireless model type is missing. Please set modelType in config.txt");
-    }
-    std::string normalizedModelType = configuredModelType.value();
-
-    if (!isValidModelType(normalizedModelType)) {
-        throw std::invalid_argument("Unsupported wireless model type: " + normalizedModelType);
-    }
-
-    vector<ProblemDataVar> vars;
-    vector<ProblemDataConstr> constrs;
-    int objSense = GRB_MINIMIZE;
-    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(normalizedModelType, dataFolder, false, false, 0.02,
-        18000.0, true, &vars, &constrs, &objSense);
-    if (!built) {
-        throw std::runtime_error("Failed to build wireless charging vars/constrs from model.");
-    }
-
-    data.addData("vars", vars);
-    data.addData("constrs", constrs);
-    data.addData("obj", objSense);
-    data.addData("wireless_model_type", normalizedModelType);
-    data.addData("wireless_data_folder", dataFolder);
-
-    std::cout << "Loaded wireless charging data from file." << std::endl;
-    std::cout << "modelType=" << normalizedModelType
-              << ", vars=" << vars.size()
-              << ", constrs=" << constrs.size() << std::endl;
 }
 
 struct OperationCfg {
@@ -1527,5 +1500,268 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
         cout << "求解失败，状态码：" << solveStatus << endl;
         return false;
     }
+}
+
+WirelessChargingDataInitializationStrategy_Solver::WirelessChargingDataInitializationStrategy_Solver(
+    std::string dataFolder)
+    : dataFolder(std::move(dataFolder)) {}
+
+void WirelessChargingDataInitializationStrategy_Solver::DataInit(ProblemData& data)
+{
+    std::string normalizedModelType =
+        LoadModelTypeFromConfig(ResolveDataFolderPath(dataFolder) / "config.txt").value();
+
+    vector<ProblemDataVar> vars;
+    vector<ProblemDataConstr> constrs;
+    int objSense = GRB_MINIMIZE;
+    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(normalizedModelType, dataFolder, false, false, 0.02,
+        18000.0, true, &vars, &constrs, &objSense);
+    if (!built) {
+        throw std::runtime_error("Failed to build wireless charging vars/constrs from model.");
+    }
+
+    data.addData("vars", vars);
+    data.addData("constrs", constrs);
+    data.addData("obj", objSense);
+    data.addData("wireless_model_type", normalizedModelType);
+    data.addData("wireless_data_folder", dataFolder);
+
+    std::cout << "Loaded wireless charging data from file." << std::endl;
+    std::cout << "modelType=" << normalizedModelType
+              << ", vars=" << vars.size()
+              << ", constrs=" << constrs.size() << std::endl;
+}
+
+WirelessChargingDataInitializationStrategy_Benders::WirelessChargingDataInitializationStrategy_Benders(
+    std::string dataFolder)
+    : dataFolder(dataFolder) {}
+
+void WirelessChargingDataInitializationStrategy_Benders::DataInit(ProblemData& data)
+{
+    std::string normalizedModelType =
+        LoadModelTypeFromConfig(ResolveDataFolderPath(dataFolder) / "config.txt").value();
+
+    vector<ProblemDataVar> vars;
+    vector<ProblemDataConstr> constrs;
+    int objSense = GRB_MINIMIZE;
+    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(normalizedModelType, dataFolder, false, false, 0,
+        18000.0, true, &vars, &constrs, &objSense);
+    if (!built) {
+        throw std::runtime_error("Failed to build wireless charging model data for Benders.");
+    }
+
+    vector<int> masterIndices;
+    vector<ProblemDataVar> masterVars;
+    masterIndices.reserve(vars.size());
+    masterVars.reserve(vars.size());
+
+    for (int i = 0; i < static_cast<int>(vars.size()); ++i) {
+        if (IsWirelessMasterVarName(vars[static_cast<size_t>(i)].name)) {
+            masterIndices.push_back(i);
+            masterVars.push_back(vars[static_cast<size_t>(i)]);
+        }
+    }
+
+    data.addData("masterVars", masterVars);
+    data.addData("wireless_master_indices", masterIndices);
+    data.addData("wireless_all_vars", vars);
+    data.addData("wireless_all_constrs", constrs);
+    data.addData("wireless_obj_sense", objSense);
+    data.addData("wireless_model_type", normalizedModelType);
+    data.addData("wireless_data_folder", dataFolder);
+
+    std::cout << "Loaded wireless charging data for Benders decomposition." << std::endl;
+    std::cout << "modelType=" << normalizedModelType
+              << ", masterVars=" << masterVars.size()
+              << ", subVars=" << vars.size()
+              << ", subConstrs=" << constrs.size() << std::endl;
+}
+
+std::vector<ProblemDataConstr> WirelessChargingDataInitializationStrategy_Benders::ConstrInit(ProblemData& data)
+{
+    const auto& allConstrs = data.getData<std::vector<ProblemDataConstr>>("wireless_all_constrs");
+    const auto& masterIndices = data.getData<std::vector<int>>("wireless_master_indices");
+
+    std::vector<ProblemDataConstr> masterConstrs;
+
+    for (const auto& constr : allConstrs) {
+        if (constr.name != "constrEChooseOne") {
+            continue;
+        }
+
+        ProblemDataConstr projected;
+        projected.coeffs.assign(masterIndices.size(), 0.0);
+        projected.sense = constr.sense;
+        projected.rhs = constr.rhs;
+        projected.name = constr.name;
+
+        for (size_t k = 0; k < masterIndices.size(); ++k) {
+            int fullIdx = masterIndices[k];
+            projected.coeffs[k] = constr.coeffs[static_cast<size_t>(fullIdx)];
+        }
+
+        masterConstrs.push_back(projected);
+        break;
+    }
+
+    return masterConstrs;
+}
+
+void WirelessChargingSubProblemStrategy_Benders::InitSubProblem(
+    const ProblemData& problemData,
+    GRBModel& subModel,
+    BendersSubProblemContext& context)
+{
+    const auto& vars = problemData.getData<std::vector<ProblemDataVar>>("wireless_all_vars");
+    const auto& constrs = problemData.getData<std::vector<ProblemDataConstr>>("wireless_all_constrs");
+    const auto& masterIndices = problemData.getData<std::vector<int>>("wireless_master_indices");
+    int objSense = problemData.getData<int>("wireless_obj_sense");
+
+    context.Clear();
+    auto& allVars = context.EnsureVarGroup(kWirelessVarGroupAllVars);
+    allVars.reserve(vars.size());
+
+    subModel.set(GRB_IntParam_InfUnbdInfo, 1);
+    subModel.set(GRB_IntParam_DualReductions, 0);
+
+    std::vector<double> objCoeffs(vars.size(), 0.0);
+    for (size_t i = 0; i < vars.size(); ++i) {
+        objCoeffs[i] = vars[i].obj;
+    }
+    for (int idx : masterIndices) {
+        objCoeffs[static_cast<size_t>(idx)] = 0.0;
+    }
+
+    for (size_t i = 0; i < vars.size(); ++i) {
+        const auto& var = vars[i];
+        allVars.push_back(subModel.addVar(var.lb, var.ub, objCoeffs[i], var.type, var.name));
+    }
+
+    for (const auto& constr : constrs) {
+        if (constr.coeffs.size() != allVars.size()) {
+            throw std::runtime_error("Wireless sub-problem constraint size mismatch.");
+        }
+        GRBLinExpr lhs = 0.0;
+        for (size_t i = 0; i < allVars.size(); ++i) {
+            if (std::abs(constr.coeffs[i]) > 1e-12) {
+                lhs += constr.coeffs[i] * allVars[i];
+            }
+        }
+        subModel.addConstr(lhs, constr.sense, constr.rhs, constr.name);
+    }
+
+    GRBLinExpr objective = 0.0;
+    for (size_t i = 0; i < vars.size(); ++i) {
+        if (std::abs(objCoeffs[i]) > 1e-12) {
+            objective += objCoeffs[i] * allVars[i];
+        }
+    }
+    subModel.setObjective(objective, objSense);
+    subModel.update();
+
+    lowerBoundReady = false;
+    qLowerBound = 0.0;
+    lowerBoundCutAdded = false;
+
+    subModel.optimize();
+    int lbStatus = subModel.get(GRB_IntAttr_Status);
+    if (lbStatus == GRB_OPTIMAL || (lbStatus == GRB_TIME_LIMIT && subModel.get(GRB_IntAttr_SolCount) > 0)) {
+        qLowerBound = subModel.get(GRB_DoubleAttr_ObjVal);
+        lowerBoundReady = true;
+    } else {
+        std::cerr << "Wireless Benders: failed to pre-compute recourse lower bound, status="
+                  << lbStatus << ". fallback lower bound = 0." << std::endl;
+    }
+}
+
+void WirelessChargingSubProblemStrategy_Benders::UpdateSubProblem(
+    const ProblemData& problemData,
+    GRBModel& subModel,
+    BendersSubProblemContext& context,
+    const std::vector<double>& yValues)
+{
+    const auto& masterIndices = problemData.getData<std::vector<int>>("wireless_master_indices");
+    auto& allVars = context.EnsureVarGroup(kWirelessVarGroupAllVars);
+
+    for (size_t i = 0; i < masterIndices.size(); ++i) {
+        int varIdx = masterIndices[i];
+        double fixedValue = (yValues[i] > 0.5) ? 1.0 : 0.0;
+        allVars[static_cast<size_t>(varIdx)].set(GRB_DoubleAttr_LB, fixedValue);
+        allVars[static_cast<size_t>(varIdx)].set(GRB_DoubleAttr_UB, fixedValue);
+    }
+
+    subModel.update();
+}
+
+Status WirelessChargingSubProblemStrategy_Benders::SolveSubProblem(
+    const ProblemData& problemData,
+    GRBModel& subModel,
+    BendersSubProblemContext& context,
+    const std::vector<double>& yValues,
+    BendersCutInfo& cutInfo,
+    double& subObj)
+{
+    subModel.optimize();
+    int status = subModel.get(GRB_IntAttr_Status);
+
+    int selectedCount = 0;
+    for (double value : yValues) {
+        if (value > 0.5) {
+            ++selectedCount;
+        }
+    }
+
+    if (status == GRB_OPTIMAL || (status == GRB_TIME_LIMIT && subModel.get(GRB_IntAttr_SolCount) > 0)) {
+        subObj = subModel.get(GRB_DoubleAttr_ObjVal);
+
+        if (lowerBoundReady && !lowerBoundCutAdded) {
+            cutInfo.isOptimalityCut = true;
+            cutInfo.sense = '>';
+            cutInfo.rhs = 0.0;
+            cutInfo.constant = qLowerBound;
+            cutInfo.yCoeffs.assign(yValues.size(), 0.0);
+            lowerBoundCutAdded = true;
+            return OK;
+        }
+
+        double lowerBound = lowerBoundReady ? qLowerBound : 0.0;
+        double delta = std::max(0.0, subObj - lowerBound);
+        cutInfo.isOptimalityCut = true;
+        cutInfo.sense = '>';
+        cutInfo.rhs = 0.0;
+        cutInfo.constant = lowerBound + delta * (1.0 - static_cast<double>(selectedCount));
+        cutInfo.yCoeffs.assign(yValues.size(), 0.0);
+
+        for (size_t i = 0; i < yValues.size(); ++i) {
+            if (yValues[i] > 0.5) {
+                cutInfo.yCoeffs[i] = delta;
+            } else {
+                cutInfo.yCoeffs[i] = -delta;
+            }
+        }
+        return OK;
+    }
+
+    if (status == GRB_INFEASIBLE || status == GRB_INF_OR_UNBD || status == GRB_UNBOUNDED) {
+        cutInfo.isOptimalityCut = false;
+        cutInfo.sense = '>';
+        cutInfo.constant = 0.0;
+        cutInfo.yCoeffs.assign(yValues.size(), 0.0);
+
+        for (size_t i = 0; i < yValues.size(); ++i) {
+            if (yValues[i] > 0.5) {
+                cutInfo.yCoeffs[i] = -1.0;
+            } else {
+                cutInfo.yCoeffs[i] = 1.0;
+            }
+        }
+
+        cutInfo.rhs = 1.0 - static_cast<double>(selectedCount);
+        subObj = GRB_INFINITY;
+        return OK;
+    }
+
+    std::cerr << "Wireless Benders sub-problem ended with unexpected status: " << status << std::endl;
+    return ERROR;
 }
 

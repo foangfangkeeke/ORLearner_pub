@@ -15,83 +15,26 @@
 #include <vector>
 
 namespace {
-using DataInitFactory = std::function<std::unique_ptr<IDataInitializationStrategy_Benders>(const std::string&)>;
-using SubFactory = std::function<std::unique_ptr<ISubProblemStrategy_Benders>()>;
+using DataInitFactory = std::function<std::unique_ptr<IDataInitializationStrategy_IntegerLShaped>(const std::string&)>;
+using SubFactory = std::function<std::unique_ptr<ISubProblemStrategy_IntegerLShaped>()>;
 
 static const std::map<ProblemType, std::tuple<DataInitFactory, SubFactory>> kStrategyMap = {
     {
         BARP_S,
         std::make_tuple(
             [](const std::string& dataFolder) {
-                return std::make_unique<BRSDataInitializationStrategy_Benders>(dataFolder);
+                return std::make_unique<BRSDataInitializationStrategy_LShaped>(dataFolder);
             },
-            []() { return std::make_unique<BRSSubProblemStrategy_Benders>(); })
+            []() { return std::make_unique<BRSSubProblemStrategy_LShaped>(); })
     }
 };
 
-Status BuildContinuousCutFromRelaxation(const ProblemData& problemData, GRBModel& subModel,
-    const std::vector<double>& zValues, BendersCutInfo& cutInfo, double& relaxedObjective)
-{
-    try {
-        const int storageCount = problemData.getData<int>("brsStorageCount");
-        const int scenarioCount = static_cast<int>(
-            problemData.getData<std::vector<BRSScenarioData>>("brsScenarios").size());
-
-        auto relaxed = std::make_unique<GRBModel>(subModel.relax());
-        relaxed->set(GRB_IntParam_OutputFlag, 0);
-        relaxed->optimize();
-
-        const int lpStatus = relaxed->get(GRB_IntAttr_Status);
-        if (lpStatus != GRB_OPTIMAL) {
-            std::cerr << "Relaxed subproblem ended with status: " << lpStatus << std::endl;
-            return ERROR;
-        }
-
-        relaxedObjective = relaxed->get(GRB_DoubleAttr_ObjVal);
-
-        cutInfo.yCoeffs.assign(static_cast<size_t>(storageCount), 0.0);
-        for (int w = 0; w < scenarioCount; ++w) {
-            for (int s = 0; s < storageCount; ++s) {
-                const std::string constrName = "assign_w" + std::to_string(w) + "_s" + std::to_string(s);
-                const GRBConstr assignConstr = relaxed->getConstrByName(constrName);
-                cutInfo.yCoeffs[static_cast<size_t>(s)] += assignConstr.get(GRB_DoubleAttr_Pi);
-            }
-        }
-
-        cutInfo.constant = relaxedObjective;
-        for (int s = 0; s < storageCount; ++s) {
-            cutInfo.constant -= cutInfo.yCoeffs[static_cast<size_t>(s)] * zValues[static_cast<size_t>(s)];
-        }
-
-        cutInfo.rhs = 0.0;
-        cutInfo.isOptimalityCut = true;
-        cutInfo.sense = '>';
-        return OK;
-    }
-    catch (const GRBException& e) {
-        std::cerr << "Continuous cut build failed: " << e.getMessage() << std::endl;
-        return ERROR;
-    }
-    catch (const std::exception& e) {
-        std::cerr << "Continuous cut build failed: " << e.what() << std::endl;
-        return ERROR;
-    }
-}
-
-Status EvaluateContinuousSubproblem(const ProblemData& problemData, ISubProblemStrategy_Benders& strategy,
-    GRBModel& subModel, BendersSubProblemContext& context, const std::vector<double>& zValues, BendersCutInfo& cutInfo,
-    double& relaxedObjective)
-{
-    strategy.UpdateSubProblem(problemData, subModel, context, zValues);
-    return BuildContinuousCutFromRelaxation(problemData, subModel, zValues, cutInfo, relaxedObjective);
-}
-
-Status EvaluateIntegerSubproblem(const ProblemData& problemData, ISubProblemStrategy_Benders& strategy,
-    GRBModel& subModel, BendersSubProblemContext& context, const std::vector<double>& zValues, double& subObj)
+Status EvaluateIntegerSubproblem(const ProblemData& problemData, ISubProblemStrategy_IntegerLShaped& strategy,
+    GRBModel& subModel, IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues, double& subObj)
 {
     strategy.UpdateSubProblem(problemData, subModel, context, zValues);
 
-    BendersCutInfo strategyCutInfo;
+    IntegerLShapedCutInfo strategyCutInfo;
     Status status = strategy.SolveSubProblem(problemData, subModel, context, zValues, strategyCutInfo, subObj);
     if (status != OK) {
         return status;
@@ -107,14 +50,14 @@ Status EvaluateIntegerSubproblem(const ProblemData& problemData, ISubProblemStra
 }
 }
 
-BARPSIntegerLShaped::BARPSIntegerLShaped(ProblemType problemType, std::string dataFolder, int maxIters, double tol)
+IntegerLShaped::IntegerLShaped(ProblemType problemType, std::string dataFolder, int maxIters, double tol)
     : problemType(problemType), dataFolder(dataFolder), maxIters(maxIters), tolerance(tol), globalLowerBound(0.0),
         bestUpperBound(std::numeric_limits<double>::infinity()),
         bestLowerBound(-std::numeric_limits<double>::infinity()),
         incumbentSecondStageValue(std::numeric_limits<double>::infinity())
 {}
 
-Status BARPSIntegerLShaped::Initialize()
+Status IntegerLShaped::Initialize()
 {
     env = std::make_unique<GRBEnv>(true);
     env->set("LogFile", "gurobi_log.txt");
@@ -172,11 +115,10 @@ Status BARPSIntegerLShaped::Initialize()
     subProblemStrategy->InitSubProblem(*problemData, *subModel, subContext);
 
     std::vector<double> allOpened(zVars.size(), 1.0);
-    BendersCutInfo warmContinuousCutInfo;
+    IntegerLShapedCutInfo warmContinuousCutInfo;
     double warmRelaxedValue = 0.0;
-    Status relaxedStatus = EvaluateContinuousSubproblem(
+    Status relaxedStatus = subProblemStrategy->SolveRelaxedSubProblem(
         *problemData,
-        *subProblemStrategy,
         *subModel,
         subContext,
         allOpened,
@@ -205,7 +147,7 @@ Status BARPSIntegerLShaped::Initialize()
     model->addConstr(theta >= globalLowerBound, "theta_global_lb");
 
     CutEval warmContinuousCut = BuildContinuousCut(warmContinuousCutInfo, allOpened, -1);
-    warmContinuousCut.name = "barps_cut_continuous_warm";
+    warmContinuousCut.name = "integer_l_shaped_cut_continuous_warm";
     model->addConstr(warmContinuousCut.expr <= theta, warmContinuousCut.name);
 
     model->update();
@@ -214,12 +156,12 @@ Status BARPSIntegerLShaped::Initialize()
     return OK;
 }
 
-BARPSIntegerLShaped::CutEval BARPSIntegerLShaped::BuildImprovedCut(const std::vector<double>& zValues,
+IntegerLShaped::CutEval IntegerLShaped::BuildImprovedCut(const std::vector<double>& zValues,
     const std::vector<double>& zCurrent, double delta, double lowerBound, int iter) const
 {
     // Improved integer cut.
     CutEval cut;
-    cut.name = "barps_cut_improved_" + std::to_string(iter);
+    cut.name = "integer_l_shaped_cut_improved_" + std::to_string(iter);
     cut.expr = lowerBound + delta;
     cut.lhsAtCurrent = lowerBound + delta;
 
@@ -233,12 +175,12 @@ BARPSIntegerLShaped::CutEval BARPSIntegerLShaped::BuildImprovedCut(const std::ve
     return cut;
 }
 
-BARPSIntegerLShaped::CutEval BARPSIntegerLShaped::BuildPriorityCut(const std::vector<double>& zValues,
+IntegerLShaped::CutEval IntegerLShaped::BuildPriorityCut(const std::vector<double>& zValues,
     const std::vector<double>& zCurrent, double delta, double lowerBound, int iter) const
 {
     // Priority-weighted integer cut.
     CutEval cut;
-    cut.name = "barps_cut_priority_" + std::to_string(iter);
+    cut.name = "integer_l_shaped_cut_priority_" + std::to_string(iter);
 
     double maxObj = 0.0;
     for (const auto& zVar : zVars) {
@@ -269,7 +211,7 @@ BARPSIntegerLShaped::CutEval BARPSIntegerLShaped::BuildPriorityCut(const std::ve
     return cut;
 }
 
-BARPSIntegerLShaped::CutEval BARPSIntegerLShaped::BuildContinuousCut(const BendersCutInfo& cutInfo,
+IntegerLShaped::CutEval IntegerLShaped::BuildContinuousCut(const IntegerLShapedCutInfo& cutInfo,
     const std::vector<double>& zCurrent, int iter) const
 {
     // Continuous cut from the relaxed subproblem.
@@ -278,7 +220,7 @@ BARPSIntegerLShaped::CutEval BARPSIntegerLShaped::BuildContinuousCut(const Bende
     }
 
     CutEval cut;
-    cut.name = "barps_cut_continuous_" + std::to_string(iter);
+    cut.name = "integer_l_shaped_cut_continuous_" + std::to_string(iter);
     cut.expr = cutInfo.constant;
     cut.lhsAtCurrent = cutInfo.constant;
 
@@ -290,14 +232,14 @@ BARPSIntegerLShaped::CutEval BARPSIntegerLShaped::BuildContinuousCut(const Bende
     return cut;
 }
 
-Status BARPSIntegerLShaped::Solve()
+Status IntegerLShaped::Solve()
 {
     for (int iter = 0; iter < maxIters; ++iter) {
         model->optimize();
         int masterStatus = model->get(GRB_IntAttr_Status);
         if (!(masterStatus == GRB_OPTIMAL ||
               (masterStatus == GRB_TIME_LIMIT && model->get(GRB_IntAttr_SolCount) > 0))) {
-            std::cerr << "BARP-S master problem not solved, status: " << masterStatus << std::endl;
+            std::cerr << "Integer L-shaped master problem not solved, status: " << masterStatus << std::endl;
             Debug::OutputModel(model);
             return ERROR;
         }
@@ -314,17 +256,17 @@ Status BARPSIntegerLShaped::Solve()
         bestLowerBound = std::max(bestLowerBound, masterObj); // find a tighter lower bound
 
         double relaxedQValue = 0.0;
-        BendersCutInfo continuousCutInfo;
-        Status relaxedStatus = EvaluateContinuousSubproblem(*problemData, *subProblemStrategy, *subModel,
+        IntegerLShapedCutInfo continuousCutInfo;
+        Status relaxedStatus = subProblemStrategy->SolveRelaxedSubProblem(*problemData, *subModel,
             subContext, zValues, continuousCutInfo, relaxedQValue);
         if (relaxedStatus != OK) {
-            std::cerr << "BARP-S relaxed second-stage evaluation failed in iteration " << iter << std::endl;
+            std::cerr << "Integer L-shaped relaxed second-stage evaluation failed in iteration " << iter << std::endl;
             return ERROR;
         }
 
         const CutEval cutContinuous = BuildContinuousCut(continuousCutInfo, zValues, iter);
 
-        std::cout << "BARP-S iter " << iter << ", theta=" << thetaValue << ", Q_lp(z)=" << relaxedQValue;
+        std::cout << "Integer L-shaped iter " << iter << ", theta=" << thetaValue << ", Q_lp(z)=" << relaxedQValue;
         if (std::isfinite(bestUpperBound)) {
             const double denom = std::max(1.0, std::fabs(bestUpperBound));
             std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound
@@ -343,7 +285,7 @@ Status BARPSIntegerLShaped::Solve()
         Status secondStageStatus = EvaluateIntegerSubproblem(*problemData, *subProblemStrategy, *subModel,
             subContext, zValues, aggregatedQValue);
         if (secondStageStatus != OK) {
-            std::cerr << "BARP-S second-stage evaluation failed in iteration " << iter << std::endl;
+            std::cerr << "Integer L-shaped second-stage evaluation failed in iteration " << iter << std::endl;
             return ERROR;
         }
 
@@ -357,7 +299,7 @@ Status BARPSIntegerLShaped::Solve()
         const CutEval cutImproved = BuildImprovedCut(zValues, zValues, delta, globalLowerBound, iter);
         const CutEval cutPriority = BuildPriorityCut(zValues, zValues, delta, globalLowerBound, iter);
 
-        std::cout << "BARP-S iter " << iter << ", theta=" << thetaValue << ", Q(z)=" << aggregatedQValue;
+        std::cout << "Integer L-shaped iter " << iter << ", theta=" << thetaValue << ", Q(z)=" << aggregatedQValue;
         if (std::isfinite(bestUpperBound)) {
             std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound;
             double denom = std::max(1.0, std::fabs(bestUpperBound));
@@ -367,7 +309,7 @@ Status BARPSIntegerLShaped::Solve()
 
         if (thetaValue + tolerance >= aggregatedQValue) {
             PrintBestSolution();
-            std::cout << "BARP-S integer L-shaped converged." << std::endl;
+            std::cout << "Integer L-shaped converged." << std::endl;
             return OK;
         }
 
@@ -376,11 +318,11 @@ Status BARPSIntegerLShaped::Solve()
         model->update();
     }
 
-    std::cout << "BARP-S reached max iterations: " << maxIters << std::endl;
+    std::cout << "Integer L-shaped reached max iterations: " << maxIters << std::endl;
     return ERROR;
 }
 
-void BARPSIntegerLShaped::UpdateIncumbent(const std::vector<double>& zValues, double secondStageValue)
+void IntegerLShaped::UpdateIncumbent(const std::vector<double>& zValues, double secondStageValue)
 {
     incumbentZValues = zValues;
     incumbentSecondStageValue = secondStageValue;
@@ -392,7 +334,7 @@ void BARPSIntegerLShaped::UpdateIncumbent(const std::vector<double>& zValues, do
     bestUpperBound = fixedCost + secondStageValue;
 }
 
-void BARPSIntegerLShaped::PrintBestSolution() const
+void IntegerLShaped::PrintBestSolution() const
 {
     if (incumbentZValues.size() != zVars.size()) {
         return;
@@ -405,4 +347,4 @@ void BARPSIntegerLShaped::PrintBestSolution() const
     std::cout << "theta: " << incumbentSecondStageValue << std::endl;
 }
 
-BARPSIntegerLShaped::~BARPSIntegerLShaped() = default;
+IntegerLShaped::~IntegerLShaped() = default;

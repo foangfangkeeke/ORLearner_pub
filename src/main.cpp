@@ -106,7 +106,7 @@ int main(int argc, char* argv[]) {
         } else if (algLower == "bp") {
             solver.SetAlgorithm(std::make_unique<BranchAndPrice>(problemType, dataFolder));
         } else if (algLower == "lshape" || algLower == "lshaped") {
-            solver.SetAlgorithm(std::make_unique<BARPSIntegerLShaped>(problemType, dataFolder));
+            solver.SetAlgorithm(std::make_unique<IntegerLShaped>(problemType, dataFolder));
         } else if (algLower == "benders" || algLower == "bd") {
             solver.SetAlgorithm(std::make_unique<BendersDecomposition>(problemType, dataFolder));
         } else {

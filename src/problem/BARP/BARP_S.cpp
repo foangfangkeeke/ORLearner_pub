@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -199,6 +200,55 @@ void AppendTravelArcs(const BRSRawInput& input, std::vector<BRSArcData>& arcs)
             travelArc.type = 'T';
             arcs.push_back(travelArc);
         }
+    }
+}
+
+Status BuildBRSRelaxedOptimalityCut(const ProblemData& problemData, GRBModel& subModel,
+    const std::vector<double>& zValues, IntegerLShapedCutInfo& cutInfo, double& relaxedObjective)
+{
+    try {
+        const int storageCount = problemData.getData<int>("brsStorageCount");
+        const int scenarioCount = static_cast<int>(
+            problemData.getData<std::vector<BRSScenarioData>>("brsScenarios").size());
+
+        auto relaxed = std::make_unique<GRBModel>(subModel.relax());
+        relaxed->set(GRB_IntParam_OutputFlag, 0);
+        relaxed->optimize();
+
+        const int lpStatus = relaxed->get(GRB_IntAttr_Status);
+        if (lpStatus != GRB_OPTIMAL) {
+            std::cerr << "BRS relaxed subproblem ended with status: " << lpStatus << std::endl;
+            return ERROR;
+        }
+
+        relaxedObjective = relaxed->get(GRB_DoubleAttr_ObjVal);
+        cutInfo.yCoeffs.assign(static_cast<size_t>(storageCount), 0.0);
+
+        for (int w = 0; w < scenarioCount; ++w) {
+            for (int s = 0; s < storageCount; ++s) {
+                const std::string constrName = "assign_w" + std::to_string(w) + "_s" + std::to_string(s);
+                const GRBConstr assignConstr = relaxed->getConstrByName(constrName);
+                cutInfo.yCoeffs[static_cast<size_t>(s)] += assignConstr.get(GRB_DoubleAttr_Pi);
+            }
+        }
+
+        cutInfo.constant = relaxedObjective;
+        for (int s = 0; s < storageCount; ++s) {
+            cutInfo.constant -= cutInfo.yCoeffs[static_cast<size_t>(s)] * zValues[static_cast<size_t>(s)];
+        }
+
+        cutInfo.rhs = 0.0;
+        cutInfo.isOptimalityCut = true;
+        cutInfo.sense = '>';
+        return OK;
+    }
+    catch (const GRBException& e) {
+        std::cerr << "BRS relaxed cut build failed: " << e.getMessage() << std::endl;
+        return ERROR;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "BRS relaxed cut build failed: " << e.what() << std::endl;
+        return ERROR;
     }
 }
 
@@ -1021,4 +1071,47 @@ Status BRSSubProblemStrategy_Benders::SolveSubProblem( const ProblemData& proble
     cutInfo.sense = '>';
 
     return OK;
+}
+
+BRSDataInitializationStrategy_LShaped::BRSDataInitializationStrategy_LShaped(std::string dataFolder)
+    : dataFolder(dataFolder)
+{}
+
+void BRSDataInitializationStrategy_LShaped::DataInit(ProblemData& problemData)
+{
+    BRSDataInitializationStrategy_Benders bendersDataIniter(dataFolder);
+    bendersDataIniter.DataInit(problemData);
+}
+
+std::vector<ProblemDataConstr> BRSDataInitializationStrategy_LShaped::ConstrInit(ProblemData& problemData)
+{
+    BRSDataInitializationStrategy_Benders bendersDataIniter(dataFolder);
+    return bendersDataIniter.ConstrInit(problemData);
+}
+
+void BRSSubProblemStrategy_LShaped::InitSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    IntegerLShapedSubProblemContext& context)
+{
+    bendersImpl.InitSubProblem(problemData, subModel, context);
+}
+
+void BRSSubProblemStrategy_LShaped::UpdateSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues)
+{
+    bendersImpl.UpdateSubProblem(problemData, subModel, context, zValues);
+}
+
+Status BRSSubProblemStrategy_LShaped::SolveSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues,
+    IntegerLShapedCutInfo& cutInfo, double& subObj)
+{
+    return bendersImpl.SolveSubProblem(problemData, subModel, context, zValues, cutInfo, subObj);
+}
+
+Status BRSSubProblemStrategy_LShaped::SolveRelaxedSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues,
+    IntegerLShapedCutInfo& cutInfo, double& subObj)
+{
+    bendersImpl.UpdateSubProblem(problemData, subModel, context, zValues);
+    return BuildBRSRelaxedOptimalityCut(problemData, subModel, zValues, cutInfo, subObj);
 }

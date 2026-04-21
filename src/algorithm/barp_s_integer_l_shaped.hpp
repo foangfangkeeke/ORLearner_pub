@@ -12,12 +12,43 @@ class GRBEnv;
 class GRBModel;
 class GRBVar;
 
-class BARPSIntegerLShaped : public IMILPAlgorithmStrategy {
+using IntegerLShapedCutInfo = BendersCutInfo;
+using IntegerLShapedSubProblemContext = BendersSubProblemContext;
+
+class IDataInitializationStrategy_IntegerLShaped {
 public:
-    BARPSIntegerLShaped(ProblemType problemType, std::string dataFolder = "test_data", int maxIters = 100, double tol = 1e-6);
+    virtual void DataInit(ProblemData& data) = 0;
+    virtual std::vector<ProblemDataConstr> ConstrInit(ProblemData& data) = 0;
+    virtual ~IDataInitializationStrategy_IntegerLShaped() = default;
+};
+
+class ISubProblemStrategy_IntegerLShaped {
+public:
+    virtual void InitSubProblem(
+        const ProblemData& problemData, GRBModel& subModel, IntegerLShapedSubProblemContext& context) = 0;
+
+    virtual void UpdateSubProblem(
+        const ProblemData& problemData, GRBModel& subModel, IntegerLShapedSubProblemContext& context,
+        const std::vector<double>& zValues) = 0;
+
+    virtual Status SolveSubProblem(
+        const ProblemData& problemData, GRBModel& subModel, IntegerLShapedSubProblemContext& context,
+        const std::vector<double>& zValues, IntegerLShapedCutInfo& cutInfo, double& subObj) = 0;
+
+    virtual Status SolveRelaxedSubProblem(
+        const ProblemData& problemData, GRBModel& subModel, IntegerLShapedSubProblemContext& context,
+        const std::vector<double>& zValues, IntegerLShapedCutInfo& cutInfo, double& subObj) = 0;
+
+    virtual std::unique_ptr<ISubProblemStrategy_IntegerLShaped> Clone() const = 0;
+    virtual ~ISubProblemStrategy_IntegerLShaped() = default;
+};
+
+class IntegerLShaped : public IMILPAlgorithmStrategy {
+public:
+    IntegerLShaped(ProblemType problemType, std::string dataFolder = "test_data", int maxIters = 100, double tol = 1e-6);
     Status Initialize() override;
     Status Solve() override;
-    ~BARPSIntegerLShaped() override;
+    ~IntegerLShaped() override;
 
 private:
     struct CutEval {
@@ -32,7 +63,8 @@ private:
     CutEval BuildPriorityCut(const std::vector<double>& zValues, const std::vector<double>& zCurrent,
         double delta, double lowerBound, int iter) const;
 
-    CutEval BuildContinuousCut(const BendersCutInfo& cutInfo, const std::vector<double>& zCurrent, int iter) const;
+    CutEval BuildContinuousCut(const IntegerLShapedCutInfo& cutInfo, const std::vector<double>& zCurrent,
+        int iter) const;
 
     void UpdateIncumbent(const std::vector<double>& zValues, double secondStageValue);
 
@@ -46,11 +78,11 @@ private:
     std::unique_ptr<GRBEnv> env;
     std::shared_ptr<GRBModel> model;
     std::unique_ptr<ProblemData> problemData;
-    std::unique_ptr<IDataInitializationStrategy_Benders> dataIniter;
-    std::unique_ptr<ISubProblemStrategy_Benders> subProblemStrategy;
+    std::unique_ptr<IDataInitializationStrategy_IntegerLShaped> dataIniter;
+    std::unique_ptr<ISubProblemStrategy_IntegerLShaped> subProblemStrategy;
     std::unique_ptr<GRBEnv> subEnv;
     std::unique_ptr<GRBModel> subModel;
-    BendersSubProblemContext subContext;
+    IntegerLShapedSubProblemContext subContext;
     std::vector<GRBVar> zVars;
     GRBVar theta;
 

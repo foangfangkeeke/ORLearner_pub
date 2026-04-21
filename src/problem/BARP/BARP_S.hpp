@@ -2,6 +2,7 @@
 
 #include "using_solver.hpp"
 #include "benders_decomposition.hpp"
+#include "barp_s_integer_l_shaped.hpp"
 
 #include <vector>
 
@@ -60,4 +61,39 @@ public:
 private:
     double qLowerBound = 0.0;
     bool lowerBoundReady = false;
+};
+
+class BRSDataInitializationStrategy_LShaped : public IDataInitializationStrategy_IntegerLShaped {
+public:
+    explicit BRSDataInitializationStrategy_LShaped(std::string dataFolder = "test_data");
+    void DataInit(ProblemData& problemData) override;
+    std::vector<ProblemDataConstr> ConstrInit(ProblemData& problemData) override;
+
+private:
+    std::string dataFolder;
+};
+
+class BRSSubProblemStrategy_LShaped : public ISubProblemStrategy_IntegerLShaped {
+public:
+    void InitSubProblem(const ProblemData& problemData, GRBModel& subModel,
+        IntegerLShapedSubProblemContext& context) override;
+
+    void UpdateSubProblem(const ProblemData& problemData, GRBModel& subModel,
+        IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues) override;
+
+    Status SolveSubProblem(const ProblemData& problemData, GRBModel& subModel,
+        IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues,
+        IntegerLShapedCutInfo& cutInfo, double& subObj) override;
+
+    Status SolveRelaxedSubProblem(const ProblemData& problemData, GRBModel& subModel,
+        IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues,
+        IntegerLShapedCutInfo& cutInfo, double& subObj) override;
+
+    std::unique_ptr<ISubProblemStrategy_IntegerLShaped> Clone() const override
+    {
+        return std::make_unique<BRSSubProblemStrategy_LShaped>(*this);
+    }
+
+private:
+    BRSSubProblemStrategy_Benders bendersImpl;
 };

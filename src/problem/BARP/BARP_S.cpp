@@ -1077,6 +1077,23 @@ std::vector<double> BRSDataInitializationStrategy_LShaped::BuildWarmStartMasterV
     return std::vector<double>(masterVars.size(), 1.0);
 }
 
+bool BRSDataInitializationStrategy_LShaped::IsWarmStartMasterFeasible(const ProblemData& problemData,
+    const std::vector<double>& zValues, double tolerance) const
+{
+    const int storageCount = problemData.getData<int>("brsStorageCount");
+    const int budget = problemData.getData<int>("brsBudget");
+
+    if (zValues.size() != static_cast<size_t>(storageCount)) {
+        throw std::invalid_argument("Warm start vector size mismatch with BARP_S master variables");
+    }
+
+    double openedCount = 0.0;
+    for (double z : zValues) {
+        openedCount += z;
+    }
+    return openedCount <= static_cast<double>(budget) + tolerance;
+}
+
 void BRSSubProblemStrategy_LShaped::InitSubProblem(const ProblemData& problemData, GRBModel& subModel,
     IntegerLShapedSubProblemContext& context)
 {

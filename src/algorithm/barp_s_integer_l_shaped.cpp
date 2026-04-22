@@ -115,7 +115,10 @@ Status IntegerLShaped::Initialize()
     }
 
     globalLowerBound = warmIntegerValue;
-    UpdateIncumbent(warmStartZ, warmIntegerValue);
+    const bool warmMasterFeasible = dataIniter->IsWarmStartMasterFeasible(*problemData, warmStartZ, tolerance);
+    if (warmMasterFeasible) {
+        UpdateIncumbent(warmStartZ, warmIntegerValue);
+    }
     model->addConstr(theta >= globalLowerBound, "theta_global_lb");
 
     model->update();
@@ -306,7 +309,7 @@ void IntegerLShaped::UpdateIncumbent(const std::vector<double>& zValues, double 
     for (size_t idx = 0; idx < zVars.size(); ++idx) {
         fixedCost += zVars[idx].get(GRB_DoubleAttr_Obj) * zValues[idx];
     }
-    bestUpperBound = fixedCost + secondStageValue; // TODO: Update only when firstStage is feasible
+    bestUpperBound = fixedCost + secondStageValue;
 }
 
 void IntegerLShaped::PrintBestSolution() const

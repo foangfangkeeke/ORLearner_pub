@@ -69,6 +69,8 @@ public:
     void DataInit(ProblemData& problemData) override;
     std::vector<ProblemDataConstr> ConstrInit(ProblemData& problemData) override;
     std::vector<double> BuildWarmStartMasterValues(const ProblemData& problemData) const override;
+    bool IsWarmStartMasterFeasible(const ProblemData& problemData, const std::vector<double>& zValues,
+        double tolerance) const override;
 
 private:
     std::string dataFolder;

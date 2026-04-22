@@ -20,6 +20,8 @@ public:
     virtual void DataInit(ProblemData& data) = 0;
     virtual std::vector<ProblemDataConstr> ConstrInit(ProblemData& data) = 0;
     virtual std::vector<double> BuildWarmStartMasterValues(const ProblemData& data) const = 0;
+    virtual bool IsWarmStartMasterFeasible(const ProblemData& data, const std::vector<double>& zValues,
+        double tolerance) const = 0;
     virtual ~IDataInitializationStrategy_IntegerLShaped() = default;
 };
 

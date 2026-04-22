@@ -19,6 +19,7 @@ class IDataInitializationStrategy_IntegerLShaped {
 public:
     virtual void DataInit(ProblemData& data) = 0;
     virtual std::vector<ProblemDataConstr> ConstrInit(ProblemData& data) = 0;
+    virtual std::vector<double> BuildWarmStartMasterValues(const ProblemData& data) const = 0;
     virtual ~IDataInitializationStrategy_IntegerLShaped() = default;
 };
 

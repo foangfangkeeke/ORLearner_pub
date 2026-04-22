@@ -1021,26 +1021,8 @@ Status BRSSubProblemStrategy_Benders::SolveSubProblem( const ProblemData& proble
     subModel.optimize();
     int status = subModel.get(GRB_IntAttr_Status);
     if (status == GRB_INFEASIBLE || status == GRB_INF_OR_UNBD || status == GRB_UNBOUNDED) {
-        cutInfo.isOptimalityCut = false;
-        cutInfo.sense = '>';
-        cutInfo.yCoeffs.assign(static_cast<size_t>(storageCount), 0.0);
-
-        int selectedCount = 0;
-        for (int s = 0; s < storageCount; ++s) {
-            bool selected = zValues[static_cast<size_t>(s)] > 0.5;
-            if (selected) {
-                ++selectedCount;
-                cutInfo.yCoeffs[static_cast<size_t>(s)] = -1.0;
-            } else {
-                cutInfo.yCoeffs[static_cast<size_t>(s)] = 1.0;
-            }
-        }
-
-        // No-good cut for binary z: sum_{s in S1}(1-z_s) + sum_{s in S0} z_s >= 1.
-        cutInfo.rhs = 1.0 - static_cast<double>(selectedCount);
-        cutInfo.constant = 0.0;
-        subObj = GRB_INFINITY;
-        return OK;
+        throw std::runtime_error(
+            "BARP-S subproblem produced a feasibility cut, which is unexpected for this formulation.");
     }
 
     if (status != GRB_OPTIMAL) {
@@ -1087,6 +1069,12 @@ std::vector<ProblemDataConstr> BRSDataInitializationStrategy_LShaped::ConstrInit
 {
     BRSDataInitializationStrategy_Benders bendersDataIniter(dataFolder);
     return bendersDataIniter.ConstrInit(problemData);
+}
+
+std::vector<double> BRSDataInitializationStrategy_LShaped::BuildWarmStartMasterValues(const ProblemData& problemData) const
+{
+    const auto& masterVars = problemData.getData<std::vector<ProblemDataVar>>("masterVars");
+    return std::vector<double>(masterVars.size(), 1.0);
 }
 
 void BRSSubProblemStrategy_LShaped::InitSubProblem(const ProblemData& problemData, GRBModel& subModel,

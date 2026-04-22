@@ -68,6 +68,7 @@ public:
     explicit BRSDataInitializationStrategy_LShaped(std::string dataFolder = "test_data");
     void DataInit(ProblemData& problemData) override;
     std::vector<ProblemDataConstr> ConstrInit(ProblemData& problemData) override;
+    std::vector<double> BuildWarmStartMasterValues(const ProblemData& problemData) const override;
 
 private:
     std::string dataFolder;

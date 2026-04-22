@@ -17,6 +17,18 @@ struct BendersCutInfo {
     char sense = '>';
 };
 
+struct BendersCutEvaluation {
+    GRBLinExpr expr = 0.0;
+    double lhsAtCurrent = 0.0;
+};
+
+struct BendersMasterSolution {
+    std::vector<double> values;
+    double firstStageValue = 0.0;
+    double thetaValue = 0.0;
+    double objectiveValue = 0.0;
+};
+
 struct BendersSubProblemContext {
     std::map<std::string, std::vector<GRBVar>> varGroups;
     std::map<std::string, std::vector<GRBConstr>> constrGroups;
@@ -61,6 +73,16 @@ struct BendersSubProblemContext {
         constrGroups.clear();
     }
 };
+
+void InitializeBendersMasterModel(GRBModel& model, const std::vector<ProblemDataVar>& masterVarData,
+    const std::vector<ProblemDataConstr>& masterConstrs, std::vector<GRBVar>& masterVars,
+    GRBVar& theta, bool requireBinaryMasterVars = false);
+
+BendersMasterSolution GetBendersMasterSolution(GRBModel& model,
+    const std::vector<GRBVar>& masterVars, const GRBVar& theta);
+
+BendersCutEvaluation BuildBendersCutEvaluation(const BendersCutInfo& cutInfo,
+    const std::vector<GRBVar>& masterVars, const std::vector<double>& masterValues);
 
 class IDataInitializationStrategy_Benders {
 public:

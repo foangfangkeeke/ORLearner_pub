@@ -41,6 +41,78 @@ static const std::map<ProblemType,
     }
 };
 
+void InitializeBendersMasterModel(GRBModel& model, const std::vector<ProblemDataVar>& masterVarData,
+    const std::vector<ProblemDataConstr>& masterConstrs, std::vector<GRBVar>& masterVars,
+    GRBVar& theta, bool requireBinaryMasterVars)
+{
+    masterVars.clear();
+    masterVars.reserve(masterVarData.size());
+
+    GRBLinExpr objective = 0.0;
+    for (const auto& var : masterVarData) {
+        if (requireBinaryMasterVars && var.type != GRB_BINARY) {
+            throw std::invalid_argument("Benders-style master problem requires binary first-stage variables");
+        }
+
+        GRBVar masterVar = model.addVar(var.lb, var.ub, var.obj, var.type, var.name);
+        masterVars.push_back(masterVar);
+        objective += var.obj * masterVar;
+    }
+
+    theta = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "theta");
+    objective += theta;
+
+    for (const auto& constr : masterConstrs) {
+        if (constr.coeffs.size() != masterVars.size()) {
+            throw std::invalid_argument("Master constraint coefficient size mismatch in Benders initialization");
+        }
+
+        GRBLinExpr lhs = 0.0;
+        for (size_t idx = 0; idx < masterVars.size(); ++idx) {
+            lhs += constr.coeffs[idx] * masterVars[idx];
+        }
+        model.addConstr(lhs, constr.sense, constr.rhs, constr.name);
+    }
+
+    model.setObjective(objective, GRB_MINIMIZE);
+    model.update();
+}
+
+BendersMasterSolution GetBendersMasterSolution(GRBModel& model, const std::vector<GRBVar>& masterVars,
+    const GRBVar& theta)
+{
+    BendersMasterSolution solution;
+    solution.values.assign(masterVars.size(), 0.0);
+
+    for (size_t idx = 0; idx < masterVars.size(); ++idx) {
+        solution.values[idx] = masterVars[idx].get(GRB_DoubleAttr_X);
+        solution.firstStageValue += masterVars[idx].get(GRB_DoubleAttr_Obj) * solution.values[idx];
+    }
+
+    solution.thetaValue = theta.get(GRB_DoubleAttr_X);
+    solution.objectiveValue = model.get(GRB_DoubleAttr_ObjVal);
+    return solution;
+}
+
+BendersCutEvaluation BuildBendersCutEvaluation(const BendersCutInfo& cutInfo, const std::vector<GRBVar>& masterVars,
+    const std::vector<double>& masterValues)
+{
+    if (cutInfo.yCoeffs.size() != masterVars.size() || masterValues.size() != masterVars.size()) {
+        throw std::invalid_argument("Benders cut size mismatch with master variables");
+    }
+
+    BendersCutEvaluation evaluation;
+    evaluation.expr = cutInfo.constant;
+    evaluation.lhsAtCurrent = cutInfo.constant;
+
+    for (size_t idx = 0; idx < masterVars.size(); ++idx) {
+        evaluation.expr += cutInfo.yCoeffs[idx] * masterVars[idx];
+        evaluation.lhsAtCurrent += cutInfo.yCoeffs[idx] * masterValues[idx];
+    }
+
+    return evaluation;
+}
+
 BendersSubSolver::BendersSubSolver(std::unique_ptr<ISubProblemStrategy_Benders> strategy)
     : strategy(std::move(strategy))
 {
@@ -58,11 +130,8 @@ void BendersSubSolver::Init(const ProblemData& problemData)
     strategy->InitSubProblem(problemData, *model, context);
 }
 
-Status BendersSubSolver::Solve(
-    const ProblemData& problemData,
-    const std::vector<double>& yValues,
-    BendersCutInfo& cutInfo,
-    double& subObj)
+Status BendersSubSolver::Solve(const ProblemData& problemData, const std::vector<double>& yValues,
+    BendersCutInfo& cutInfo, double& subObj)
 {
     strategy->UpdateSubProblem(problemData, *model, context, yValues);
     return strategy->SolveSubProblem(problemData, *model, context, yValues, cutInfo, subObj); // TODO: warmup
@@ -92,33 +161,7 @@ Status BendersDecomposition::Initialize()
     dataIniter->DataInit(*problemData);
     std::vector<ProblemDataConstr> masterConstrs = dataIniter->ConstrInit(*problemData);
     const auto& masterVars = problemData->getData<std::vector<ProblemDataVar>>("masterVars");
-
-    yVars.clear();
-    yVars.reserve(masterVars.size());
-    GRBLinExpr objective = 0;
-    for (const auto& var : masterVars) {
-        GRBVar y = model->addVar(var.lb, var.ub, var.obj, var.type, var.name);
-        yVars.push_back(y);
-        objective += var.obj * y;
-    }
-
-    theta = model->addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "theta");
-    objective += theta;
-
-    for (size_t i = 0; i < masterConstrs.size(); ++i) {
-        const auto& constr = masterConstrs[i];
-        if (constr.coeffs.size() != yVars.size()) {
-            throw std::invalid_argument("Master constraint coefficient size mismatch in Benders initialization");
-        }
-        GRBLinExpr lhs = 0;
-        for (size_t j = 0; j < yVars.size(); ++j) {
-            lhs += constr.coeffs[j] * yVars[j];
-        }
-        model->addConstr(lhs, constr.sense, constr.rhs, constr.name);
-    }
-
-    model->setObjective(objective, GRB_MINIMIZE);
-    model->update();
+    InitializeBendersMasterModel(*model, masterVars, masterConstrs, yVars, theta);
 
     sub->Init(*problemData);
 
@@ -141,20 +184,12 @@ Status BendersDecomposition::Solve()
             return ERROR;
         }
 
-        std::vector<double> yValues(yVars.size(), 0.0);
-        double fixedCost = 0.0;
-        for (size_t i = 0; i < yVars.size(); ++i) {
-            yValues[i] = yVars[i].get(GRB_DoubleAttr_X);
-            fixedCost += yVars[i].get(GRB_DoubleAttr_Obj) * yValues[i];
-        }
-
-        double thetaValue = theta.get(GRB_DoubleAttr_X);
-        double masterObj = model->get(GRB_DoubleAttr_ObjVal);
-        bestLowerBound = std::max(bestLowerBound, masterObj);
+        const BendersMasterSolution masterSolution = GetBendersMasterSolution(*model, yVars, theta);
+        bestLowerBound = std::max(bestLowerBound, masterSolution.objectiveValue);
 
         BendersCutInfo cutInfo;
         double subObj = 0.0;
-        Status subStatus = sub->Solve(*problemData, yValues, cutInfo, subObj);
+        Status subStatus = sub->Solve(*problemData, masterSolution.values, cutInfo, subObj);
         if (subStatus != OK) {
             std::cerr << "Sub-problem solve failed in Benders iteration " << iter << std::endl;
             return ERROR;
@@ -162,37 +197,29 @@ Status BendersDecomposition::Solve()
 
         bool cutAdded = false;
         if (cutInfo.isOptimalityCut) {
-            GRBLinExpr lhsExpr = cutInfo.constant; // The parts of the cut that are not related to y.
-            double lhsCurrent = cutInfo.constant;
-            for (size_t i = 0; i < yVars.size(); ++i) {
-                lhsExpr += cutInfo.yCoeffs[i] * yVars[i];
-                lhsCurrent += cutInfo.yCoeffs[i] * yValues[i];
-            }
+            const BendersCutEvaluation cutEvaluation =
+                BuildBendersCutEvaluation(cutInfo, yVars, masterSolution.values);
 
-            bestUpperBound = std::min(bestUpperBound, fixedCost + subObj);
+            bestUpperBound = std::min(bestUpperBound, masterSolution.firstStageValue + subObj);
 
-            if (thetaValue + tolerance < lhsCurrent) {
-                model->addConstr(lhsExpr <= theta, "opt_cut_" + std::to_string(iter));
+            if (masterSolution.thetaValue + tolerance < cutEvaluation.lhsAtCurrent) {
+                model->addConstr(cutEvaluation.expr <= theta, "opt_cut_" + std::to_string(iter));
                 cutAdded = true;
             }
         }
         else { // feasibility cut
-            GRBLinExpr lhsExpr = 0;
-            double lhsCurrent = 0.0;
-            for (size_t i = 0; i < yVars.size(); ++i) {
-                lhsExpr += cutInfo.yCoeffs[i] * yVars[i];
-                lhsCurrent += cutInfo.yCoeffs[i] * yValues[i];
-            }
+            const BendersCutEvaluation cutEvaluation =
+                BuildBendersCutEvaluation(cutInfo, yVars, masterSolution.values);
 
             if (cutInfo.sense == '>') {
-                if (lhsCurrent + tolerance < cutInfo.rhs) {
-                    model->addConstr(lhsExpr >= cutInfo.rhs, "feas_cut_" + std::to_string(iter));
+                if (cutEvaluation.lhsAtCurrent + tolerance < cutInfo.rhs) {
+                    model->addConstr(cutEvaluation.expr >= cutInfo.rhs, "feas_cut_" + std::to_string(iter));
                     cutAdded = true;
                 }
             }
             else if (cutInfo.sense == '<') { // rhs = constant at right side
-                if (lhsCurrent - tolerance > cutInfo.rhs) {
-                    model->addConstr(lhsExpr <= cutInfo.rhs, "feas_cut_" + std::to_string(iter));
+                if (cutEvaluation.lhsAtCurrent - tolerance > cutInfo.rhs) {
+                    model->addConstr(cutEvaluation.expr <= cutInfo.rhs, "feas_cut_" + std::to_string(iter));
                     cutAdded = true;
                 }
             }

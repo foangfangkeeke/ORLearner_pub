@@ -80,32 +80,7 @@ Status IntegerLShaped::Initialize()
     dataIniter->DataInit(*problemData);
     const std::vector<ProblemDataConstr> masterConstrs = dataIniter->ConstrInit(*problemData);
     const auto& masterVars = problemData->getData<std::vector<ProblemDataVar>>("masterVars");
-
-    zVars.clear();
-    zVars.reserve(masterVars.size());
-    GRBLinExpr masterObjective = 0.0;
-    for (const auto& var : masterVars) {
-        if (var.type != GRB_BINARY) {
-            throw std::invalid_argument("Integer L-shaped framework requires binary master variables");
-        }
-        GRBVar zVar = model->addVar(var.lb, var.ub, var.obj, var.type, var.name);
-        zVars.push_back(zVar);
-        masterObjective += var.obj * zVar;
-    }
-
-    theta = model->addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "theta");
-    masterObjective += theta;
-
-    for (const auto& constr : masterConstrs) {
-        GRBLinExpr lhs = 0.0;
-        for (size_t idx = 0; idx < zVars.size(); ++idx) {
-            lhs += constr.coeffs[idx] * zVars[idx];
-        }
-        model->addConstr(lhs, constr.sense, constr.rhs, constr.name);
-    }
-
-    model->setObjective(masterObjective, GRB_MINIMIZE);
-    model->update();
+    InitializeBendersMasterModel(*model, masterVars, masterConstrs, zVars, theta, true);
 
     subEnv = std::make_unique<GRBEnv>(true);
     subEnv->set(GRB_IntParam_OutputFlag, 0);
@@ -215,20 +190,12 @@ IntegerLShaped::CutEval IntegerLShaped::BuildContinuousCut(const IntegerLShapedC
     const std::vector<double>& zCurrent, int iter) const
 {
     // Continuous cut from the relaxed subproblem.
-    if (cutInfo.yCoeffs.size() != zVars.size()) {
-        throw std::invalid_argument("Continuous cut coefficient size mismatch with master variables");
-    }
+    const BendersCutEvaluation cutEvaluation = BuildBendersCutEvaluation(cutInfo, zVars, zCurrent);
 
     CutEval cut;
     cut.name = "integer_l_shaped_cut_continuous_" + std::to_string(iter);
-    cut.expr = cutInfo.constant;
-    cut.lhsAtCurrent = cutInfo.constant;
-
-    for (size_t idx = 0; idx < zVars.size(); ++idx) {
-        cut.expr += cutInfo.yCoeffs[idx] * zVars[idx];
-        cut.lhsAtCurrent += cutInfo.yCoeffs[idx] * zCurrent[idx];
-    }
-
+    cut.expr = cutEvaluation.expr;
+    cut.lhsAtCurrent = cutEvaluation.lhsAtCurrent;
     return cut;
 }
 
@@ -244,16 +211,11 @@ Status IntegerLShaped::Solve()
             return ERROR;
         }
 
-        std::vector<double> zValues(zVars.size(), 0.0);
-        double fixedCost = 0.0;
-        for (size_t idx = 0; idx < zVars.size(); ++idx) {
-            zValues[idx] = zVars[idx].get(GRB_DoubleAttr_X);
-            fixedCost += zVars[idx].get(GRB_DoubleAttr_Obj) * zValues[idx];
-        }
-
-        const double thetaValue = theta.get(GRB_DoubleAttr_X);
-        const double masterObj = model->get(GRB_DoubleAttr_ObjVal);
-        bestLowerBound = std::max(bestLowerBound, masterObj); // find a tighter lower bound
+        const BendersMasterSolution masterSolution = GetBendersMasterSolution(*model, zVars, theta);
+        const std::vector<double>& zValues = masterSolution.values;
+        const double fixedCost = masterSolution.firstStageValue;
+        const double thetaValue = masterSolution.thetaValue;
+        bestLowerBound = std::max(bestLowerBound, masterSolution.objectiveValue); // find a tighter lower bound
 
         double relaxedQValue = 0.0;
         IntegerLShapedCutInfo continuousCutInfo;

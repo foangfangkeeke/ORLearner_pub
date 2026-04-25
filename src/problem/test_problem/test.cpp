@@ -15,81 +15,64 @@
 
 using namespace std;
 
-namespace {
-bool LoadTestData(const std::string& dataFolder, vector<ProblemDataVar>& vars, vector<ProblemDataConstr>& constrs, int& obj)
-{
-    vars.clear();
-    constrs.clear();
-    obj = 0;
-
-    try {
-        const std::filesystem::path dataPath =
-            std::filesystem::path(__FILE__).parent_path() / dataFolder / "test_input.txt";
-        std::ifstream stream(dataPath);
-        std::string line;
-
-        if (!Tools::ReadValidLine(stream, line)) return true;
-        int numVar = std::stoi(line);
-
-        for (int i = 0; i < numVar; ++i) {
-            if (!Tools::ReadValidLine(stream, line)) return true;
-            auto parts = Tools::SplitAndTrim(line, ',');
-            
-            ProblemDataVar var;
-            var.lb = std::stod(parts[0]);
-            var.ub = (parts[1] == "inf" || parts[1] == "INF") ? 
-                     std::numeric_limits<double>::infinity() : std::stod(parts[1]);
-            var.obj = std::stod(parts[2]);
-            var.type = (parts[3] == "GRB_INTEGER") ? 'I' : 'C';
-            var.name = "var_" + std::to_string(i);
-            
-            vars.push_back(var);
-        }
-
-        if (!Tools::ReadValidLine(stream, line)) return true;
-        int numConstr = std::stoi(line);
-
-        for (int i = 0; i < numConstr; ++i) {
-            if (!Tools::ReadValidLine(stream, line)) return true;
-            auto parts = Tools::SplitAndTrim(line, ',');
-            
-            ProblemDataConstr constr;
-            constr.coeffs.push_back(std::stod(parts[0]));
-            constr.coeffs.push_back(std::stod(parts[1]));
-            constr.sense = parts[2][0];
-            constr.rhs = std::stod(parts[3]);
-            constr.name = "constr_" + std::to_string(i);
-            
-            constrs.push_back(constr);
-        }
-
-        if (!Tools::ReadValidLine(stream, line)) return true;
-        obj = (line == "min") ? 1 : -1; 
-
-        return false;
-    } catch (...) {
-        return true;
-    }
-}
-} // namespace
-
 TestDataInitializationStrategy_Solver::TestDataInitializationStrategy_Solver(std::string dataFolder)
     : dataFolder(dataFolder)
 {}
 
-void TestDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
+Status TestDataInitializationStrategy_Solver::DataInit(GRBModel& model)
 {
-    vector<ProblemDataVar> vars;
-    vector<ProblemDataConstr> constrs;
-    int obj;
+    const std::filesystem::path dataPath =
+        std::filesystem::path(__FILE__).parent_path() / dataFolder / "test_input.txt";
+    std::ifstream stream(dataPath);
+    std::string line;
 
-    if (LoadTestData(dataFolder, vars, constrs, obj)) {
+    if (!Tools::ReadValidLine(stream, line)) {
         throw std::runtime_error("Failed to load test data from file.");
     }
+    int numVar = std::stoi(line);
 
-    problemData.addData("vars", vars);
+    vector<GRBVar> grbVars;
+    grbVars.reserve(static_cast<size_t>(numVar));
+    GRBLinExpr objective = 0;
 
-    problemData.addData("constrs", constrs);
+    for (int i = 0; i < numVar; ++i) {
+        if (!Tools::ReadValidLine(stream, line)) {
+            throw std::runtime_error("Failed to load test variable data.");
+        }
+        auto parts = Tools::SplitAndTrim(line, ',');
+        double lb = std::stod(parts[0]);
+        double ub = (parts[1] == "inf" || parts[1] == "INF") ?
+            std::numeric_limits<double>::infinity() : std::stod(parts[1]);
+        double obj = std::stod(parts[2]);
+        char type = (parts[3] == "GRB_INTEGER") ? GRB_INTEGER : GRB_CONTINUOUS;
+        GRBVar var = model.addVar(lb, ub, obj, type, "var_" + std::to_string(i));
+        grbVars.push_back(var);
+        objective += obj * var;
+    }
 
-    problemData.addData("obj", obj);
+    if (!Tools::ReadValidLine(stream, line)) {
+        throw std::runtime_error("Failed to load test constraint count.");
+    }
+    int numConstr = std::stoi(line);
+
+    for (int i = 0; i < numConstr; ++i) {
+        if (!Tools::ReadValidLine(stream, line)) {
+            throw std::runtime_error("Failed to load test constraint data.");
+        }
+        auto parts = Tools::SplitAndTrim(line, ',');
+        GRBLinExpr lhs = 0;
+        for (size_t i = 0; i < grbVars.size(); ++i) {
+            lhs += std::stod(parts[i]) * grbVars[i];
+        }
+        char sense = parts[grbVars.size()][0];
+        double rhs = std::stod(parts[grbVars.size() + 1]);
+        model.addConstr(lhs, sense, rhs, "constr_" + std::to_string(i));
+    }
+
+    if (!Tools::ReadValidLine(stream, line)) {
+        throw std::runtime_error("Failed to load test objective sense.");
+    }
+    int objSense = (line == "min") ? GRB_MINIMIZE : GRB_MAXIMIZE;
+    model.setObjective(objective, objSense);
+    return OK;
 }

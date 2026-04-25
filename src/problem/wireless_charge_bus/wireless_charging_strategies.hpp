@@ -6,7 +6,7 @@
 class WirelessChargingDataInitializationStrategy_Solver : public IDataInitializationStrategy_Solver {
 public:
 	WirelessChargingDataInitializationStrategy_Solver(std::string dataFolder);
-	void DataInit(ProblemData& data) override;
+	Status DataInit(GRBModel& model) override;
 
 private:
 	std::string dataFolder;

@@ -42,7 +42,7 @@ public:
 class FCTPDataInitializationStrategy_Solver : public IDataInitializationStrategy_Solver {
 public:
     explicit FCTPDataInitializationStrategy_Solver(std::string dataFolder = "test_data");
-    void DataInit(ProblemData& problemData) override;
+    Status DataInit(GRBModel& model) override;
 
 private:
     std::string dataFolder;

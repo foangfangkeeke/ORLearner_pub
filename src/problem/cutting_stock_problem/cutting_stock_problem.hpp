@@ -29,7 +29,7 @@ private:
 class CuttingStockDataInitializationStrategy_Solver : public IDataInitializationStrategy_Solver {
 public:
     explicit CuttingStockDataInitializationStrategy_Solver(std::string dataFolder = "test_data");
-    void DataInit(ProblemData& problemData) override;
+    Status DataInit(GRBModel& model) override;
 
 private:
     std::string dataFolder;

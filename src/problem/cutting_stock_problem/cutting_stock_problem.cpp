@@ -182,7 +182,7 @@ std::vector<std::vector<int>> findAllCombinations(int stockLength, const std::ve
     return result;
 }
 
-void CuttingStockDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
+Status CuttingStockDataInitializationStrategy_Solver::DataInit(GRBModel& model)
 {
     int stockLength;
     std::vector<int> itemLengths;
@@ -197,41 +197,32 @@ void CuttingStockDataInitializationStrategy_Solver::DataInit(ProblemData& proble
     auto allPatterns = findAllCombinations(stockLength, itemLengths);
     std::cout << "Generated " << allPatterns.size() << " cutting patterns." << std::endl;
 
-    std::vector<ProblemDataVar> vars;
-    std::vector<ProblemDataConstr> constrs;
-    int obj;
-
-    for (size_t i = 0; i < allPatterns.size(); ++i) {
-        ProblemDataVar var;
-        var.lb = 0;
-        var.ub = GRB_INFINITY;
-        var.obj = 1;
-        var.type = 'I';
-        std::ostringstream oss;
-        var.name = "x" + PatternToString(allPatterns[i]);
-        vars.push_back(var);
-    }
-
-    for (size_t i = 0; i < demands.size(); ++i) {
-        ProblemDataConstr constr;
-        for (size_t j = 0; j < allPatterns.size(); ++j) {
-            constr.coeffs.push_back(allPatterns[j][i]);
-        }
-        constr.sense = '>';
-        constr.rhs = demands[i];
-        constr.name = "demand_" + std::to_string(i);
-        constrs.push_back(constr);
-    }
-
-    problemData.addData("vars", vars);
-    problemData.addData("constrs", constrs);
-    problemData.addData("obj", obj);
-
-
     std::cout << "stockLength=" << stockLength << std::endl;
     std::cout << "demands:" << std::endl;
 
     for (size_t i = 0; i < itemLengths.size(); ++i) {
         std::cout << "  Length " << itemLengths[i] << ": " << demands[i] << std::endl;
     }
+
+    std::vector<GRBVar> patternVars;
+    patternVars.reserve(allPatterns.size());
+    GRBLinExpr obj = 0;
+
+    for (size_t i = 0; i < allPatterns.size(); ++i) {
+        GRBVar var = model.addVar(0.0, GRB_INFINITY, 1.0, GRB_INTEGER,
+            "x" + PatternToString(allPatterns[i]));
+        patternVars.push_back(var);
+        obj += var;
+    }
+
+    for (size_t i = 0; i < demands.size(); ++i) {
+        GRBLinExpr lhs = 0;
+        for (size_t j = 0; j < allPatterns.size(); ++j) {
+            lhs += allPatterns[j][i] * patternVars[j];
+        }
+        model.addConstr(lhs >= demands[i], "demand_" + std::to_string(i));
+    }
+
+    model.setObjective(obj, GRB_MINIMIZE);
+    return OK;
 }

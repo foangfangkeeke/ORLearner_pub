@@ -194,59 +194,6 @@ static bool TryParseBatteryChoiceCapacity(const string& varName, double& capacit
 
 } // namespace
 
-static bool ExtractProblemDataFromModel(GRBModel& model, vector<ProblemDataVar>& vars,
-    vector<ProblemDataConstr>& constrs, int& objSense)
-{
-    try {
-        model.update();
-
-        int numVars = model.get(GRB_IntAttr_NumVars);
-        int numConstrs = model.get(GRB_IntAttr_NumConstrs);
-        objSense = model.get(GRB_IntAttr_ModelSense);
-
-        GRBVar* grbVars = model.getVars();
-        GRBConstr* grbConstrs = model.getConstrs();
-
-        vars.clear();
-        vars.reserve(static_cast<size_t>(numVars));
-        for (int i = 0; i < numVars; ++i) {
-            ProblemDataVar var;
-            var.lb = grbVars[i].get(GRB_DoubleAttr_LB);
-            var.ub = grbVars[i].get(GRB_DoubleAttr_UB);
-            var.obj = grbVars[i].get(GRB_DoubleAttr_Obj);
-            var.type = grbVars[i].get(GRB_CharAttr_VType);
-            var.name = grbVars[i].get(GRB_StringAttr_VarName);
-            vars.push_back(var);
-        }
-
-        constrs.clear();
-        constrs.reserve(static_cast<size_t>(numConstrs));
-        for (int c = 0; c < numConstrs; ++c) {
-            ProblemDataConstr constr;
-            constr.coeffs.assign(static_cast<size_t>(numVars), 0.0);
-            constr.sense = grbConstrs[c].get(GRB_CharAttr_Sense);
-            constr.rhs = grbConstrs[c].get(GRB_DoubleAttr_RHS);
-            constr.name = grbConstrs[c].get(GRB_StringAttr_ConstrName);
-
-            for (int v = 0; v < numVars; ++v) {
-                double coeff = model.getCoeff(grbConstrs[c], grbVars[v]);
-                if (std::abs(coeff) > 1e-12) {
-                    constr.coeffs[static_cast<size_t>(v)] = coeff;
-                }
-            }
-
-            constrs.push_back(std::move(constr));
-        }
-
-        delete[] grbVars;
-        delete[] grbConstrs;
-        return true;
-    } catch (const GRBException& e) {
-        cerr << "Failed to extract wireless model to ProblemData: " << e.getMessage() << endl;
-        return false;
-    }
-}
-
 struct OperationCfg {
     double priceOfPowerDay; // CNY per kW
     double priceOfPowerNight; // CNY per kW
@@ -630,10 +577,17 @@ static Status SolveWirelessRelaxedForFarkas(GRBModel& relaxedModel)
     }
 }
 
+struct WirelessGurobiOptions {
+    bool allowOutputSolution = false;
+    bool outputSolverLog = false;
+    double mipGap = 0.0;
+    double timeLimit = 18000.0;
+    bool buildProblemDataOnly = false;
+    GRBModel* externalModel = nullptr;
+};
+
 static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& modelType, const string& dataFolder,
-    bool allowWarmStart, bool allowOutputSolution, double givenGap, double givenTime, bool buildProblemDataOnly,
-    vector<ProblemDataVar>* outVars, vector<ProblemDataConstr>* outConstrs, int* outObjSense,
-    GRBModel* externalModel = nullptr) {
+    const WirelessGurobiOptions& options) {
 
     auto timeRecordStart = chrono::high_resolution_clock::now();
     unique_ptr<ModelData> data = make_unique<ModelData>(dataFolder);
@@ -659,11 +613,11 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
 
     unique_ptr<GRBEnv> ownedEnv;
     unique_ptr<GRBModel> ownedModel;
-    GRBModel* modelPtr = externalModel;
+    GRBModel* modelPtr = options.externalModel;
     if (modelPtr == nullptr) {
         ownedEnv = make_unique<GRBEnv>(true);
         ownedEnv->set("LogFile", logPath.string());
-        ownedEnv->set(GRB_IntParam_OutputFlag, buildProblemDataOnly ? 0 : 1);
+        ownedEnv->set(GRB_IntParam_OutputFlag, options.outputSolverLog ? 1 : 0);
         ownedEnv->start();
         ownedModel = make_unique<GRBModel>(*ownedEnv);
         modelPtr = ownedModel.get();
@@ -672,8 +626,8 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     GRBModel& model = *modelPtr;
     model.set(GRB_StringAttr_ModelName, runId);
 
-    model.set(GRB_DoubleParam_MIPGap, givenGap);
-    model.set(GRB_DoubleParam_TimeLimit, givenTime);
+    model.set(GRB_DoubleParam_MIPGap, options.mipGap);
+    model.set(GRB_DoubleParam_TimeLimit, options.timeLimit);
     model.set(GRB_IntParam_Presolve, 2);
     model.set(GRB_IntParam_MIPFocus, 1); // 优先改进可行解
     model.set(GRB_DoubleParam_Heuristics, 0.5); // 提高启发式强度
@@ -1318,23 +1272,11 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     }
 
     model.update();
-    if (buildProblemDataOnly) {
-        if (externalModel != nullptr) {
-            return true;
-        }
-        if (outVars == nullptr || outConstrs == nullptr || outObjSense == nullptr) {
-            return false;
-        }
-        return ExtractProblemDataFromModel(model, *outVars, *outConstrs, *outObjSense);
+    if (options.buildProblemDataOnly) {
+        return options.externalModel != nullptr;
     }
-    // if (allowWarmStart && fs::exists(solutionPath)) {
-    //     try {
-    //         model.read(solutionPath.string());
     //         cout << "检测到已有解，作为起点继续求解: " << solutionPath.string() << endl;
-    //     } catch (const GRBException& e) {
     //         cout << "读取已有解失败，改为重新求解: " << e.getMessage() << endl;
-    //     }
-    // }
 
     auto timeRecordFinishModelInit = chrono::high_resolution_clock::now();
     model.optimize();
@@ -1470,7 +1412,8 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
             cout << "写入放电事件文件失败: " << dischargePath.string() << endl;
         }
 
-        if (!allowOutputSolution) {
+        if (!options.allowOutputSolution) {
+            cout << "Current objective: " << model.get(GRB_DoubleAttr_ObjVal) << endl;
             return true;
         }
         cout << "\n================ success ================" << endl;
@@ -1726,30 +1669,21 @@ WirelessChargingDataInitializationStrategy_Solver::WirelessChargingDataInitializ
     std::string dataFolder)
     : dataFolder(std::move(dataFolder)) {}
 
-void WirelessChargingDataInitializationStrategy_Solver::DataInit(ProblemData& data)
+Status WirelessChargingDataInitializationStrategy_Solver::DataInit(GRBModel& model)
 {
     std::string normalizedModelType =
         LoadModelTypeFromConfig(ResolveDataFolderPath(dataFolder) / "config.txt").value();
 
-    vector<ProblemDataVar> vars;
-    vector<ProblemDataConstr> constrs;
-    int objSense = GRB_MINIMIZE;
-    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(normalizedModelType, dataFolder, false, false, 0.02,
-        18000.0, true, &vars, &constrs, &objSense);
-    if (!built) {
-        throw std::runtime_error("Failed to build wireless charging vars/constrs from model.");
-    }
-
-    data.addData("vars", vars);
-    data.addData("constrs", constrs);
-    data.addData("obj", objSense);
-    data.addData("wireless_model_type", normalizedModelType);
-    data.addData("wireless_data_folder", dataFolder);
-
     std::cout << "Loaded wireless charging data from file." << std::endl;
-    std::cout << "modelType=" << normalizedModelType
-              << ", vars=" << vars.size()
-              << ", constrs=" << constrs.size() << std::endl;
+    std::cout << "modelType=" << normalizedModelType << std::endl;
+
+    WirelessGurobiOptions options;
+    options.mipGap = 0.02;
+    options.timeLimit = 18000.0;
+    options.buildProblemDataOnly = true;
+    options.externalModel = &model;
+    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(normalizedModelType, dataFolder, options);
+    return built ? OK : ERROR;
 }
 
 WirelessChargingDataInitializationStrategy_Benders::WirelessChargingDataInitializationStrategy_Benders(
@@ -1779,8 +1713,11 @@ void WirelessChargingSubProblemStrategy_Benders::InitSubProblem(
     auto& masterVarRefs = context.EnsureVarGroup(kWirelessVarGroupAllVars);
     masterVarRefs.reserve(masterVars.size());
 
-    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(modelType, dataFolder, false, false, 0,
-        18000.0, true, nullptr, nullptr, nullptr, &subModel);
+    WirelessGurobiOptions options;
+    options.timeLimit = 18000.0;
+    options.buildProblemDataOnly = true;
+    options.externalModel = &subModel;
+    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(modelType, dataFolder, options);
     if (!built) {
         throw std::runtime_error("Failed to build wireless charging sub-problem.");
     }

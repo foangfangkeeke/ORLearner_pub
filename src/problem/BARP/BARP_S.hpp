@@ -26,7 +26,7 @@ struct BRSArcData {
 class BRSDataInitializationStrategy_Solver : public IDataInitializationStrategy_Solver {
 public:
     explicit BRSDataInitializationStrategy_Solver(std::string dataFolder = "test_data");
-    void DataInit(ProblemData& problemData) override;
+    Status DataInit(GRBModel& model) override;
 
 private:
     std::string dataFolder;

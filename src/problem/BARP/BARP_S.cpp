@@ -263,7 +263,7 @@ BRSDataInitializationStrategy_Benders::BRSDataInitializationStrategy_Benders(std
 {}
 
 
-void BRSDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
+Status BRSDataInitializationStrategy_Solver::DataInit(GRBModel& model)
 {
     BRSRawInput input = LoadBRSInput(dataFolder);
 
@@ -456,124 +456,107 @@ void BRSDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
         throw std::runtime_error("BARP-S solver variable size mismatch");
     }
 
-    std::vector<ProblemDataConstr> constrs;
-    constrs.reserve(
-        static_cast<size_t>(1 + // budget
-                            scenarioCount *
-                                (input.stationCount * input.horizon + // train balance
-                                 storageCount + // assignment
-                                 input.stationCount * (input.horizon + 1) + // min headway
-                                 input.stationCount * input.horizon + // passenger balance on t = 0..T-1
-                                 input.stationCount + // passenger alighting constraints
-                                 input.stationCount * activeAlphaHorizon + // passenger alighting link constraints
-                                 yArcCount)));
+    std::vector<GRBVar> grbVars;
+    grbVars.reserve(vars.size());
+    GRBLinExpr obj = 0;
+
+    for (const auto& var : vars) {
+        grbVars.push_back(model.addVar(var.lb, var.ub, var.obj, var.type, var.name));
+        obj += var.obj * grbVars.back();
+    }
+
+    int constrCount = 0;
 
     {
-        ProblemDataConstr constr;
-        constr.coeffs.assign(static_cast<size_t>(totalVars), 0.0);
+        GRBLinExpr lhs = 0;
         for (int s = 0; s < storageCount; ++s) {
-            constr.coeffs[static_cast<size_t>(zIndex(s))] = 1.0;
+            lhs += grbVars[static_cast<size_t>(zIndex(s))];
         }
-        constr.sense = '<';
-        constr.rhs = static_cast<double>(input.budget);
-        constr.name = "brs_budget";
-        constrs.push_back(constr);
+        model.addConstr(lhs <= static_cast<double>(input.budget), "brs_budget");
+        ++constrCount;
     }
 
     for (int w = 0; w < scenarioCount; ++w) {
         for (int i = 0; i < input.stationCount; ++i) {
             for (int t = 0; t < input.horizon; ++t) {
-                ProblemDataConstr constr;
-                constr.coeffs.assign(static_cast<size_t>(totalVars), 0.0);
+                GRBLinExpr lhs = 0;
                 int node = nodeIndex(i, t);
                 for (int arcIdx : nodeOutgoingX[static_cast<size_t>(node)]) {
-                    constr.coeffs[static_cast<size_t>(xIndex(w, arcIdx))] += 1.0;
+                    lhs += grbVars[static_cast<size_t>(xIndex(w, arcIdx))];
                 }
                 for (int arcIdx : nodeIncomingX[static_cast<size_t>(node)]) {
-                    constr.coeffs[static_cast<size_t>(xIndex(w, arcIdx))] -= 1.0;
+                    lhs -= grbVars[static_cast<size_t>(xIndex(w, arcIdx))];
                 }
-                constr.sense = '=';
-                constr.rhs = (t == 0) ? static_cast<double>(input.existingTrains[static_cast<size_t>(i)]) : 0.0;
-                constr.name = "train_balance_w" + std::to_string(w) + "_i" + std::to_string(i) +
-                              "_t" + std::to_string(t);
-                constrs.push_back(constr);
+                double rhs = (t == 0) ? static_cast<double>(input.existingTrains[static_cast<size_t>(i)]) : 0.0;
+                model.addConstr(lhs == rhs, "train_balance_w" + std::to_string(w) + "_i" + std::to_string(i) +
+                    "_t" + std::to_string(t));
+                ++constrCount;
             }
         }
 
         for (int s = 0; s < storageCount; ++s) {
-            ProblemDataConstr constr;
-            constr.coeffs.assign(static_cast<size_t>(totalVars), 0.0);
+            GRBLinExpr lhs = 0;
             for (int arcIdx : assignmentArcsByStorage[static_cast<size_t>(s)]) {
-                constr.coeffs[static_cast<size_t>(xIndex(w, arcIdx))] += 1.0;
+                lhs += grbVars[static_cast<size_t>(xIndex(w, arcIdx))];
             }
-            constr.coeffs[static_cast<size_t>(zIndex(s))] = -1.0;
-            constr.sense = '<';
-            constr.rhs = 0.0;
-            constr.name = "assign_w" + std::to_string(w) + "_s" + std::to_string(s);
-            constrs.push_back(constr);
+            lhs -= grbVars[static_cast<size_t>(zIndex(s))];
+            model.addConstr(lhs <= 0.0, "assign_w" + std::to_string(w) + "_s" + std::to_string(s));
+            ++constrCount;
         }
 
         for (int i = 0; i < input.stationCount; ++i) {
             for (int t = 0; t <= input.horizon; ++t) {
-                ProblemDataConstr constr;
-                constr.coeffs.assign(static_cast<size_t>(totalVars), 0.0);
+                GRBLinExpr lhs = 0;
                 int latest = std::min(input.horizon, t + input.minHeadway);
                 for (int tau = t; tau <= latest; ++tau) {
                     int node = nodeIndex(i, tau);
                     for (int arcIdx : nodeIncomingTravelX[static_cast<size_t>(node)]) {
-                        constr.coeffs[static_cast<size_t>(xIndex(w, arcIdx))] += 1.0;
+                        lhs += grbVars[static_cast<size_t>(xIndex(w, arcIdx))];
                     }
                 }
-                constr.sense = '<';
-                constr.rhs = 1.0;
-                constr.name = "headway_w" + std::to_string(w) + "_i" + std::to_string(i) +
-                              "_t" + std::to_string(t);
-                constrs.push_back(constr);
+                model.addConstr(lhs <= 1.0, "headway_w" + std::to_string(w) + "_i" + std::to_string(i) +
+                    "_t" + std::to_string(t));
+                ++constrCount;
             }
         }
 
         for (int i = 0; i < input.stationCount; ++i) {
             for (int t = 0; t < input.horizon; ++t) {
-                ProblemDataConstr constr;
-                constr.coeffs.assign(static_cast<size_t>(totalVars), 0.0);
+                GRBLinExpr lhs = 0;
                 int node = nodeIndex(i, t);
 
                 for (int yArcIdx : nodeIncomingY[static_cast<size_t>(node)]) {
-                    constr.coeffs[static_cast<size_t>(yIndex(w, yArcIdx))] += 1.0;
+                    lhs += grbVars[static_cast<size_t>(yIndex(w, yArcIdx))];
                 }
                 for (int yArcIdx : nodeOutgoingY[static_cast<size_t>(node)]) {
-                    constr.coeffs[static_cast<size_t>(yIndex(w, yArcIdx))] -= 1.0;
+                    lhs -= grbVars[static_cast<size_t>(yIndex(w, yArcIdx))];
                 }
 
+                std::string constrName;
+                double rhs = 0.0;
                 if (t == 0) {
-                    constr.sense = '=';
-                    constr.rhs = -input.scenarios[static_cast<size_t>(w)]
-                                      .originDemand[static_cast<size_t>(i)];
-                    constr.name = "passenger_balance0_w" + std::to_string(w) + "_i" +
-                                  std::to_string(i);
+                    rhs = -input.scenarios[static_cast<size_t>(w)].originDemand[static_cast<size_t>(i)];
+                    constrName = "passenger_balance0_w" + std::to_string(w) + "_i" + std::to_string(i);
                 } else {
                     int aIdx = alphaIndex(w, i, t);
-                    constr.coeffs[static_cast<size_t>(aIdx)] -= 1.0;
-                    constr.sense = '=';
-                    constr.rhs = 0.0;
-                    constr.name = "passenger_balance_w" + std::to_string(w) + "_i" +
-                                  std::to_string(i) + "_t" + std::to_string(t);
+                    lhs -= grbVars[static_cast<size_t>(aIdx)];
+                    constrName = "passenger_balance_w" + std::to_string(w) + "_i" +
+                        std::to_string(i) + "_t" + std::to_string(t);
                 }
-                constrs.push_back(constr);
+                model.addConstr(lhs == rhs, constrName);
+                ++constrCount;
             }
         }
 
         for (int i = 0; i < input.stationCount; ++i) {
-            ProblemDataConstr constr;
-            constr.coeffs.assign(static_cast<size_t>(totalVars), 0.0);
+            GRBLinExpr lhs = 0;
             for (int t = 1; t < input.horizon; ++t) {
                 int aIdx = alphaIndex(w, i, t);
-                constr.coeffs[static_cast<size_t>(aIdx)] += 1.0;
+                lhs += grbVars[static_cast<size_t>(aIdx)];
             }
-            constr.sense = '<';
-            constr.rhs = input.scenarios[static_cast<size_t>(w)].destinationDemand[static_cast<size_t>(i)];
-            constr.name = "alight_total_w" + std::to_string(w) + "_i" + std::to_string(i);
-            constrs.push_back(constr);
+            model.addConstr(lhs <= input.scenarios[static_cast<size_t>(w)].destinationDemand[static_cast<size_t>(i)],
+                "alight_total_w" + std::to_string(w) + "_i" + std::to_string(i));
+            ++constrCount;
         }
 
         double bigM = std::accumulate(
@@ -583,22 +566,19 @@ void BRSDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
 
         for (int i = 0; i < input.stationCount; ++i) {
             for (int t = 1; t < input.horizon; ++t) {
-                ProblemDataConstr constr;
-                constr.coeffs.assign(static_cast<size_t>(totalVars), 0.0);
+                GRBLinExpr lhs = 0;
 
                 int aIdx = alphaIndex(w, i, t);
-                constr.coeffs[static_cast<size_t>(aIdx)] += 1.0;
+                lhs += grbVars[static_cast<size_t>(aIdx)];
 
                 int node = nodeIndex(i, t);
                 for (int arcIdx : nodeIncomingTravelX[static_cast<size_t>(node)]) {
-                    constr.coeffs[static_cast<size_t>(xIndex(w, arcIdx))] -= bigM;
+                    lhs -= bigM * grbVars[static_cast<size_t>(xIndex(w, arcIdx))];
                 }
 
-                constr.sense = '<';
-                constr.rhs = 0.0;
-                constr.name = "alight_link_w" + std::to_string(w) + "_i" + std::to_string(i) +
-                              "_t" + std::to_string(t);
-                constrs.push_back(constr);
+                model.addConstr(lhs <= 0.0, "alight_link_w" + std::to_string(w) + "_i" + std::to_string(i) +
+                    "_t" + std::to_string(t));
+                ++constrCount;
             }
         }
 
@@ -608,23 +588,18 @@ void BRSDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
                 continue;
             }
 
-            ProblemDataConstr constr;
-            constr.coeffs.assign(static_cast<size_t>(totalVars), 0.0);
-            constr.coeffs[static_cast<size_t>(yIndex(w, yArcIdx))] += 1.0;
-            constr.coeffs[static_cast<size_t>(xIndex(w, arcIdx))] -= static_cast<double>(input.trainCapacity);
-            constr.sense = '<';
-            constr.rhs = 0.0;
-            constr.name = "travel_cap_w" + std::to_string(w) + "_a" + std::to_string(yArcIdx);
-            constrs.push_back(constr);
+            GRBLinExpr lhs = grbVars[static_cast<size_t>(yIndex(w, yArcIdx))] -
+                static_cast<double>(input.trainCapacity) * grbVars[static_cast<size_t>(xIndex(w, arcIdx))];
+            model.addConstr(lhs <= 0.0, "travel_cap_w" + std::to_string(w) + "_a" + std::to_string(yArcIdx));
+            ++constrCount;
         }
     }
 
-    problemData.addData("vars", vars);
-    problemData.addData("constrs", constrs);
-    problemData.addData("obj", GRB_MINIMIZE);
-
     std::cout << "Loaded BRS BARP-S data for direct solver." << std::endl;
-    std::cout << "Vars=" << vars.size() << ", Constrs=" << constrs.size() << std::endl;
+    std::cout << "Vars=" << vars.size() << ", Constrs=" << constrCount << std::endl;
+    model.setObjective(obj, GRB_MINIMIZE);
+
+    return OK;
 }
 
 void BRSDataInitializationStrategy_Benders::DataInit(ProblemData& problemData)

@@ -131,7 +131,7 @@ FCTPDataInitializationStrategy_Benders::FCTPDataInitializationStrategy_Benders(s
     : dataFolder(dataFolder)
 {}
 
-void FCTPDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
+Status FCTPDataInitializationStrategy_Solver::DataInit(GRBModel& model)
 {
     vector<int> supplys;
     vector<int> demands;
@@ -144,93 +144,51 @@ void FCTPDataInitializationStrategy_Solver::DataInit(ProblemData& problemData)
 
     const int supplyCount = static_cast<int>(supplys.size());
     const int demandCount = static_cast<int>(demands.size());
-    const int arcCount = supplyCount * demandCount;
-    const int varCount = arcCount * 2;
+    cout << "Loaded FCTP data from file." << endl;
+    cout << "Supply nodes: " << supplyCount << ", Demand nodes: " << demandCount << endl;
+    cout << "Variables: " << supplyCount * demandCount * 2
+         << ", Constraints: " << supplyCount + demandCount + supplyCount * demandCount << endl;
 
-    auto xIndex = [demandCount](int i, int j) {
-        return i * demandCount + j;
-    };
-    auto yIndex = [arcCount, demandCount](int i, int j) {
-        return arcCount + i * demandCount + j;
-    };
-
-    vector<ProblemDataVar> vars;
-    vars.reserve(varCount);
+    vector<vector<GRBVar>> x(supplyCount, vector<GRBVar>(demandCount));
+    vector<vector<GRBVar>> y(supplyCount, vector<GRBVar>(demandCount));
+    GRBLinExpr obj = 0;
 
     for (int i = 0; i < supplyCount; ++i) {
         for (int j = 0; j < demandCount; ++j) {
-            ProblemDataVar xVar;
-            xVar.lb = 0.0;
-            xVar.ub = static_cast<double>(min(supplys[i], demands[j]));
-            xVar.obj = static_cast<double>(transCosts[i][j]);
-            xVar.type = 'C';
-            xVar.name = "x_" + to_string(i) + "_" + to_string(j);
-            vars.push_back(xVar);
+            x[i][j] = model.addVar(0.0, static_cast<double>(min(supplys[i], demands[j])),
+                static_cast<double>(transCosts[i][j]), GRB_CONTINUOUS,
+                "x_" + to_string(i) + "_" + to_string(j));
+            y[i][j] = model.addVar(0.0, 1.0, static_cast<double>(fixedCharges[i][j]), GRB_BINARY,
+                "y_" + to_string(i) + "_" + to_string(j));
+            obj += transCosts[i][j] * x[i][j] + fixedCharges[i][j] * y[i][j];
         }
     }
 
     for (int i = 0; i < supplyCount; ++i) {
+        GRBLinExpr lhs = 0;
         for (int j = 0; j < demandCount; ++j) {
-            ProblemDataVar yVar;
-            yVar.lb = 0.0;
-            yVar.ub = 1.0;
-            yVar.obj = static_cast<double>(fixedCharges[i][j]);
-            yVar.type = 'B';
-            yVar.name = "y_" + to_string(i) + "_" + to_string(j);
-            vars.push_back(yVar);
+            lhs += x[i][j];
         }
-    }
-
-    vector<ProblemDataConstr> constrs;
-    constrs.reserve(supplyCount + demandCount + arcCount);
-
-    for (int i = 0; i < supplyCount; ++i) {
-        ProblemDataConstr constr;
-        constr.coeffs.assign(varCount, 0.0);
-        for (int j = 0; j < demandCount; ++j) {
-            constr.coeffs[xIndex(i, j)] = 1.0;
-        }
-        constr.sense = '<';
-        constr.rhs = static_cast<double>(supplys[i]);
-        constr.name = "supply_" + to_string(i);
-        constrs.push_back(constr);
+        model.addConstr(lhs <= supplys[i], "supply_" + to_string(i));
     }
 
     for (int j = 0; j < demandCount; ++j) {
-        ProblemDataConstr constr;
-        constr.coeffs.assign(varCount, 0.0);
+        GRBLinExpr lhs = 0;
         for (int i = 0; i < supplyCount; ++i) {
-            constr.coeffs[xIndex(i, j)] = 1.0;
+            lhs += x[i][j];
         }
-        constr.sense = '=';
-        constr.rhs = static_cast<double>(demands[j]);
-        constr.name = "demand_" + to_string(j);
-        constrs.push_back(constr);
+        model.addConstr(lhs == demands[j], "demand_" + to_string(j));
     }
 
     for (int i = 0; i < supplyCount; ++i) {
         for (int j = 0; j < demandCount; ++j) {
-            ProblemDataConstr constr;
-            constr.coeffs.assign(varCount, 0.0);
             const double bigM = static_cast<double>(max(supplys[i], demands[j]));
-            constr.coeffs[xIndex(i, j)] = 1.0;
-            constr.coeffs[yIndex(i, j)] = -bigM;
-            constr.sense = '<';
-            constr.rhs = 0.0;
-            constr.name = "link_" + to_string(i) + "_" + to_string(j);
-            constrs.push_back(constr);
+            model.addConstr(x[i][j] <= bigM * y[i][j], "link_" + to_string(i) + "_" + to_string(j));
         }
     }
 
-    const int objSense = GRB_MINIMIZE;
-
-    problemData.addData("vars", vars);
-    problemData.addData("constrs", constrs);
-    problemData.addData("obj", objSense);
-
-    cout << "Loaded FCTP data from file." << endl;
-    cout << "Supply nodes: " << supplyCount << ", Demand nodes: " << demandCount << endl;
-    cout << "Variables: " << vars.size() << ", Constraints: " << constrs.size() << endl;
+    model.setObjective(obj, GRB_MINIMIZE);
+    return OK;
 }
 
 void FCTPDataInitializationStrategy_Benders::DataInit(ProblemData& problemData)

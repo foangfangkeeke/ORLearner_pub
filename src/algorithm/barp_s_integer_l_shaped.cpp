@@ -1,6 +1,7 @@
 #include "barp_s_integer_l_shaped.hpp"
 
 #include "BARP_S.hpp"
+#include "wireless_charging_strategies.hpp"
 #include "tools.hpp"
 
 #include <algorithm>
@@ -26,6 +27,14 @@ static const std::map<ProblemType, std::tuple<DataInitFactory, SubFactory>> kStr
                 return std::make_unique<BRSDataInitializationStrategy_LShaped>(dataFolder);
             },
             []() { return std::make_unique<BRSSubProblemStrategy_LShaped>(); })
+    },
+    {
+        WIRELESS_CHARGING,
+        std::make_tuple(
+            [](const std::string& dataFolder) {
+                return std::make_unique<WirelessChargingDataInitializationStrategy_LShaped>(dataFolder);
+            },
+            []() { return std::make_unique<WirelessChargingSubProblemStrategy_LShaped>(); })
     }
 };
 
@@ -117,6 +126,8 @@ Status IntegerLShaped::Initialize()
     globalLowerBound = warmIntegerValue;
     const bool warmMasterFeasible = dataIniter->IsWarmStartMasterFeasible(*problemData, warmStartZ, tolerance);
     if (warmMasterFeasible) {
+        std::cout << "Warm start solution is feasible for the master problem with objective value: " << warmIntegerValue
+                  << std::endl;
         UpdateIncumbent(warmStartZ, warmIntegerValue);
     }
     model->addConstr(theta >= globalLowerBound, "theta_global_lb");
@@ -217,30 +228,39 @@ Status IntegerLShaped::Solve()
         IntegerLShapedCutInfo continuousCutInfo;
         Status relaxedStatus = subProblemStrategy->SolveRelaxedSubProblem(*problemData, *subModel,
             subContext, zValues, continuousCutInfo, relaxedQValue);
-        if (relaxedStatus != OK) { // TODO: feasible cut from relaxation
-            std::cout << "Integer L-shaped iter " << iter
-                      << ", relaxed subproblem unavailable; fallback to integer evaluation";
+        if (relaxedStatus != OK) { // Error in solving relaxed sub-problem
+            std::cerr << "Relaxed sub-problem failed in iteration " << iter << std::endl;
+            return ERROR;
+        }
+
+        // Relaxed sub-problem infeasible, add feasibility cut.
+        if (!continuousCutInfo.isOptimalityCut) {
+            AddFeasibilityCut(*model, continuousCutInfo, zVars,
+                "integer_l_shaped_relaxed_feasibility_" + std::to_string(iter));
+            std::cout << "Integer L-shaped iter " << iter << ", feasibility cut from relaxation";
             if (std::isfinite(bestUpperBound)) {
                 const double denom = std::max(1.0, std::fabs(bestUpperBound));
                 std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound
                           << ", gap=" << (bestUpperBound - bestLowerBound) / denom * 100.0 << "%";
             }
             std::cout << std::endl;
-        } else {
-            if (thetaValue + tolerance < relaxedQValue) {
-                std::cout << "Integer L-shaped iter " << iter << ", theta=" << thetaValue << ", Q_lp(z)=" << relaxedQValue;
-                if (std::isfinite(bestUpperBound)) {
-                    const double denom = std::max(1.0, std::fabs(bestUpperBound));
-                    std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound
-                            << ", gap=" << (bestUpperBound - bestLowerBound) / denom * 100.0 << "%";
-                }
-
-                const CutEval cutContinuous = BuildContinuousCut(continuousCutInfo, zValues, iter);
-                model->addConstr(cutContinuous.expr <= theta, cutContinuous.name);
-                model->update();
-                std::cout << ", cut from relaxation" << std::endl;
-                continue;
+            model->update();
+            continue;
+        }
+        // Relaxed sub-problem feasible and can be cut.
+        if (std::isfinite(relaxedQValue) && thetaValue + tolerance < relaxedQValue) {
+            std::cout << "Integer L-shaped iter " << iter << ", theta=" << thetaValue << ", Q_lp(z)=" << relaxedQValue;
+            if (std::isfinite(bestUpperBound)) {
+                const double denom = std::max(1.0, std::fabs(bestUpperBound));
+                std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound
+                        << ", gap=" << (bestUpperBound - bestLowerBound) / denom * 100.0 << "%";
             }
+
+            const CutEval cutContinuous = BuildContinuousCut(continuousCutInfo, zValues, iter);
+            model->addConstr(cutContinuous.expr <= theta, cutContinuous.name);
+            model->update();
+            std::cout << ", cut from relaxation" << std::endl;
+            continue;
         }
 
         double aggregatedQValue = 0.0;
@@ -291,7 +311,7 @@ Status IntegerLShaped::Solve()
             return OK;
         }
 
-        model->addConstr(cutImproved.expr <= theta, cutImproved.name);
+        // model->addConstr(cutImproved.expr <= theta, cutImproved.name); // TODO: not available for all problem types.
         model->addConstr(cutPriority.expr <= theta, cutPriority.name);
         model->update();
     }
@@ -318,11 +338,15 @@ void IntegerLShaped::PrintBestSolution() const
         return;
     }
 
+    std::cout << "Active master variables:" << std::endl;
     for (size_t idx = 0; idx < zVars.size(); ++idx) {
-        std::cout << zVars[idx].get(GRB_StringAttr_VarName) << ": "
-                  << incumbentZValues[idx] << std::endl;
+        if (incumbentZValues[idx] <= 0.5) {
+            continue;
+        }
+        std::cout << zVars[idx].get(GRB_StringAttr_VarName) << std::endl;
     }
     std::cout << "theta: " << incumbentSecondStageValue << std::endl;
+    std::cout << "objective: " << bestUpperBound << std::endl;
 }
 
 IntegerLShaped::~IntegerLShaped() = default;

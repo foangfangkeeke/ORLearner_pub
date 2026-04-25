@@ -239,7 +239,16 @@ Status BendersDecomposition::Solve()
         std::cout << std::endl;
 
         if (!cutAdded) {
-            Debug::OutputResult(model);
+            std::cout << "Active master variables:" << std::endl;
+            for (const auto& yVar : yVars) {
+                const double value = yVar.get(GRB_DoubleAttr_X);
+                if (value <= 0.5) {
+                    continue;
+                }
+                std::cout << yVar.get(GRB_StringAttr_VarName) << std::endl;
+            }
+            std::cout << "theta: " << theta.get(GRB_DoubleAttr_X) << std::endl;
+            std::cout << "objective: " << model->get(GRB_DoubleAttr_ObjVal) << std::endl;
             std::cout << "Benders converged with no violated cuts." << std::endl;
             return OK;
         }

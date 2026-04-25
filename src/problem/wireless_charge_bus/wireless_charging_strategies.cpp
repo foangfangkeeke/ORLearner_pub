@@ -166,18 +166,32 @@ inline double getSoH(const int& y, const vector<double>& batteryDegradation) {
 }
 
 constexpr const char* kWirelessVarGroupAllVars = "wireless_all_vars";
+constexpr const char* kWirelessBatteryChoicePrefix = "E_choice_";
 
 static bool StartsWith(const string& value, const string& prefix)
 {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
 
-static bool IsWirelessMasterVarName(const string& varName)
+static bool TryParseBatteryChoiceCapacity(const string& varName, double& capacity)
 {
-    return StartsWith(varName, "E_choice_") ||
-           StartsWith(varName, "w_station_") ||
-           StartsWith(varName, "w_link_");
+    if (!StartsWith(varName, kWirelessBatteryChoicePrefix)) {
+        return false;
+    }
+
+    const string suffix = varName.substr(string(kWirelessBatteryChoicePrefix).size());
+    if (suffix.empty()) {
+        return false;
+    }
+
+    try {
+        capacity = stod(suffix);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
+
 } // namespace
 
 static bool ExtractProblemDataFromModel(GRBModel& model, vector<ProblemDataVar>& vars,
@@ -242,7 +256,7 @@ struct OperationCfg {
     double capacityMin;
     double capacityMax;
     double curbWeight;
-    double energyPerWeright;
+    double weightPerEnergy;
     double mu;
     double g;
     int timeMin;
@@ -367,7 +381,7 @@ private:
             operationCfg.timeMax = stoi(operationCfgInt[1]);
             operationCfg.timeInterval = stoi(operationCfgInt[2]);
             operationCfg.curbWeight = stod(operationCfgBus[0]);
-            operationCfg.energyPerWeright = stod(operationCfgBus[1]);
+            operationCfg.weightPerEnergy = stod(operationCfgBus[1]);
             operationCfg.mu = stod(operationCfgBus[2]);
             operationCfg.g = stod(operationCfgBus[3]);
             operationCfg.batteryLifespan = stoi(operationCfgBattery[0]);
@@ -425,9 +439,201 @@ private:
     }
 };
 
+static double CalcWirelessBatteryChoiceObjCoeff(const ModelData& data)
+{
+    const OperationCfg& operationCfg = data.GetOperationCfg();
+    const SchedulingCfg& schedulingCfg = data.GetSchedulingCfg();
+
+    auto sohAfterYears = [&](int years) {
+        return getSoH(years, operationCfg.batteryDegradation);
+    };
+
+    const int fullCycles = operationCfg.planningYears / operationCfg.batteryLifespan;
+    const int tailYears = operationCfg.planningYears % operationCfg.batteryLifespan;
+    const double sohAtEol = sohAfterYears(operationCfg.batteryLifespan);
+    const double sohTail = (tailYears > 0) ? sohAfterYears(tailYears) : 0.0;
+    const int batteriesNeeded = fullCycles + (tailYears > 0 ? 1 : 0);
+    const double salvageCapacitySum = fullCycles * sohAtEol + sohTail;
+
+    return schedulingCfg.numEB * operationCfg.priceOfUnitBat *
+        (static_cast<double>(batteriesNeeded) - salvageCapacitySum * operationCfg.recyclingPriceRate);
+}
+
+static vector<ProblemDataVar> BuildWirelessMasterVars(const string& modelType, const ModelData& data)
+{
+    const OperationCfg& operationCfg = data.GetOperationCfg();
+    const ChargerCfg& chargerCfg = data.GetChargerCfg();
+    const NetworkCfg& networkCfg = data.GetNetworkCfg();
+
+    vector<ProblemDataVar> masterVars;
+    const double batteryChoiceObjCoeff = CalcWirelessBatteryChoiceObjCoeff(data);
+    for (double cap = operationCfg.capacityMin; cap <= operationCfg.capacityMax; cap += 10.0) {
+        if (cap <= 0.0) {
+            continue;
+        }
+
+        ProblemDataVar var;
+        var.lb = 0.0;
+        var.ub = 1.0;
+        var.obj = batteryChoiceObjCoeff * cap;
+        var.type = GRB_BINARY;
+        var.name = "E_choice_" + to_string(static_cast<int>(cap));
+        masterVars.push_back(var);
+    }
+
+    if (isSupportStaticWireless(modelType)) {
+        vector<int> stations(networkCfg.stationPhys.begin(), networkCfg.stationPhys.end());
+        sort(stations.begin(), stations.end());
+        const double stationCost =
+            (60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[1] + chargerCfg.priceOfUnitCharger[1]) * 2;
+        for (int station : stations) {
+            if (networkCfg.chargerPhys.count(station)) {
+                continue;
+            }
+
+            ProblemDataVar var;
+            var.lb = 0.0;
+            var.ub = 1.0;
+            var.obj = stationCost;
+            var.type = GRB_BINARY;
+            var.name = "w_station_s" + to_string(station);
+            masterVars.push_back(var);
+        }
+    }
+
+    if (isSupportDynamicWireless(modelType)) {
+        vector<pair<int, int>> links;
+        for (const auto& [start, endMap] : networkCfg.linkDistances) {
+            for (const auto& [end, _] : endMap) {
+                links.emplace_back(start, end);
+            }
+        }
+        sort(links.begin(), links.end());
+
+        for (const auto& [start, end] : links) {
+            const double dist = networkCfg.linkDistances.at(start).at(end);
+            ProblemDataVar var;
+            var.lb = 0.0;
+            var.ub = 1.0;
+            var.obj = chargerCfg.priceOfUnitCharger[2] * dist +
+                60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[2];
+            var.type = GRB_BINARY;
+            var.name = "w_link_l" + to_string(start) + "To" + to_string(end);
+            masterVars.push_back(var);
+        }
+    }
+
+    return masterVars;
+}
+
+static void InitWirelessMasterData(ProblemData& data, const string& dataFolder, const string& usageLabel)
+{
+    std::string normalizedModelType =
+        LoadModelTypeFromConfig(ResolveDataFolderPath(dataFolder) / "config.txt").value();
+    ModelData modelData(dataFolder);
+    vector<ProblemDataVar> masterVars = BuildWirelessMasterVars(normalizedModelType, modelData);
+
+    data.addData("masterVars", masterVars);
+    data.addData("wireless_model_type", normalizedModelType);
+    data.addData("wireless_data_folder", dataFolder);
+    data.addData("wireless_scenario_count", 1);
+
+    std::cout << "Loaded wireless charging data for " << usageLabel << "." << std::endl;
+    std::cout << "modelType=" << normalizedModelType
+              << ", scenarios=1"
+              << ", masterVars=" << masterVars.size() << std::endl;
+}
+
+static std::vector<ProblemDataConstr> BuildWirelessMasterConstrs(const ProblemData& data)
+{
+    const auto& masterVars = data.getData<std::vector<ProblemDataVar>>("masterVars");
+
+    ProblemDataConstr capacityPick;
+    capacityPick.coeffs.assign(masterVars.size(), 0.0);
+    capacityPick.sense = '=';
+    capacityPick.rhs = 1.0;
+    capacityPick.name = "constrEChooseOne";
+
+    for (size_t idx = 0; idx < masterVars.size(); ++idx) {
+        if (StartsWith(masterVars[idx].name, kWirelessBatteryChoicePrefix)) {
+            capacityPick.coeffs[idx] = 1.0;
+        }
+    }
+
+    return {capacityPick};
+}
+
+static void BuildWirelessNoGoodFeasibilityCut(
+    const vector<double>& zValues, BendersCutInfo& cutInfo)
+{
+    int selectedCount = 0;
+    for (double value : zValues) {
+        if (value > 0.5) {
+            ++selectedCount;
+        }
+    }
+
+    cutInfo.yCoeffs.assign(zValues.size(), 0.0);
+    for (size_t i = 0; i < zValues.size(); ++i) {
+        cutInfo.yCoeffs[i] = (zValues[i] > 0.5) ? -1.0 : 1.0;
+    }
+    cutInfo.rhs = 1.0 - static_cast<double>(selectedCount);
+    cutInfo.isOptimalityCut = false;
+    cutInfo.sense = '>';
+    cutInfo.constant = 0.0;
+}
+
+static Status BuildWirelessFarkasFeasibilityCut(GRBModel& relaxedModel,
+    const vector<GRBConstr>& relaxedFixConstrs, const vector<double>& zValues,
+    IntegerLShapedCutInfo& cutInfo)
+{
+    try {
+        const double beta = relaxedModel.get(GRB_DoubleAttr_FarkasProof);
+        if (!std::isfinite(beta) || beta <= 1e-9) {
+            BuildWirelessNoGoodFeasibilityCut(zValues, cutInfo);
+            return OK;
+        }
+
+        cutInfo.isOptimalityCut = false;
+        cutInfo.sense = '>';
+        cutInfo.rhs = beta;
+        cutInfo.yCoeffs.assign(zValues.size(), 0.0);
+        cutInfo.constant = 0.0;
+
+        for (size_t i = 0; i < zValues.size(); ++i) {
+            const double lambda = relaxedFixConstrs[i].get(GRB_DoubleAttr_FarkasDual);
+            cutInfo.yCoeffs[i] = lambda;
+            cutInfo.constant -= lambda * zValues[i];
+        }
+
+        return OK;
+    } catch (const GRBException&) {
+        BuildWirelessNoGoodFeasibilityCut(zValues, cutInfo);
+        return OK;
+    }
+}
+
+static Status SolveWirelessRelaxedForFarkas(GRBModel& relaxedModel)
+{
+    try {
+        relaxedModel.set(GRB_IntParam_Method, 1);
+        relaxedModel.set(GRB_IntParam_Crossover, 1);
+        relaxedModel.optimize();
+        const int status = relaxedModel.get(GRB_IntAttr_Status);
+        relaxedModel.set(GRB_IntParam_Method, 2);
+        relaxedModel.set(GRB_IntParam_Crossover, 0);
+        return (status == GRB_INFEASIBLE || status == GRB_INF_OR_UNBD || status == GRB_UNBOUNDED) ? OK : ERROR;
+    } catch (const GRBException&) {
+        relaxedModel.set(GRB_IntParam_Method, 2);
+        relaxedModel.set(GRB_IntParam_Crossover, 0);
+        return ERROR;
+    }
+}
+
 static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& modelType, const string& dataFolder,
     bool allowWarmStart, bool allowOutputSolution, double givenGap, double givenTime, bool buildProblemDataOnly,
-    vector<ProblemDataVar>* outVars, vector<ProblemDataConstr>* outConstrs, int* outObjSense) {
+    vector<ProblemDataVar>* outVars, vector<ProblemDataConstr>* outConstrs, int* outObjSense,
+    GRBModel* externalModel = nullptr) {
 
     auto timeRecordStart = chrono::high_resolution_clock::now();
     unique_ptr<ModelData> data = make_unique<ModelData>(dataFolder);
@@ -451,12 +657,19 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
 
     fs::path logPath = resultDir / "gurobi_log.txt";
 
-    GRBEnv env = GRBEnv(true);
-    env.set("LogFile", logPath.string());
-    env.set(GRB_IntParam_OutputFlag, buildProblemDataOnly ? 0 : 1);
-    env.start();
+    unique_ptr<GRBEnv> ownedEnv;
+    unique_ptr<GRBModel> ownedModel;
+    GRBModel* modelPtr = externalModel;
+    if (modelPtr == nullptr) {
+        ownedEnv = make_unique<GRBEnv>(true);
+        ownedEnv->set("LogFile", logPath.string());
+        ownedEnv->set(GRB_IntParam_OutputFlag, buildProblemDataOnly ? 0 : 1);
+        ownedEnv->start();
+        ownedModel = make_unique<GRBModel>(*ownedEnv);
+        modelPtr = ownedModel.get();
+    }
 
-    GRBModel model = GRBModel(env);
+    GRBModel& model = *modelPtr;
     model.set(GRB_StringAttr_ModelName, runId);
 
     model.set(GRB_DoubleParam_MIPGap, givenGap);
@@ -476,7 +689,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     auto calcTotalEnergyForCapacity = [&](double cap) {
         double total = 0.0;
         auto segmentEnergy = [&](double dist) {
-            return dist * (operationCfg.curbWeight + cap / operationCfg.energyPerWeright) * operationCfg.mu * operationCfg.g / 3.6;
+            return dist * (operationCfg.curbWeight + cap * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
         };
 
         for (int ebIdx = 0; ebIdx < schedulingCfg.numEB; ++ebIdx) {
@@ -819,9 +1032,13 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     int batteriesNeeded = fullCycles + (tailYears > 0 ? 1 : 0);
     double salvageCapacitySum = fullCycles * sohAtEol + sohTail;
 
-    GRBLinExpr batteryPricePerUnit = numEB * operationCfg.priceOfUnitBat * E;
-    obj += batteryPricePerUnit * static_cast<double>(batteriesNeeded);
-    obj -= batteryPricePerUnit * salvageCapacitySum * operationCfg.recyclingPriceRate;
+    const double batteryChoiceObjCoeff = numEB * operationCfg.priceOfUnitBat *
+        (static_cast<double>(batteriesNeeded) - salvageCapacitySum * operationCfg.recyclingPriceRate);
+    for (size_t i = 0; i < batteryChoice.size(); ++i) {
+        const double coeff = batteryChoiceObjCoeff * batteryOptions[i];
+        batteryChoice[i].set(GRB_DoubleAttr_Obj, coeff);
+        obj += coeff * batteryChoice[i];
+    }
 
     if (isSupportStaticWireless(modelType)) {
         GRBLinExpr sum_station_charger = 0;
@@ -1004,7 +1221,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
             int startStation = schedulingCfg.stationTrips[startTrip][startStationIdx];
             string subStart = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(startTrip) + "_s" + to_string(startStation) + "_i" + to_string(startStationIdx);
             double distStart = networkCfg.startDistanceEBs[eb];
-            GRBLinExpr consumptionStart = distStart * (operationCfg.curbWeight + E / operationCfg.energyPerWeright) * operationCfg.mu * operationCfg.g / 3.6;
+            GRBLinExpr consumptionStart = distStart * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
             GRBVar startEnergy = energyArr_ybns[year][eb][startTripIdx][startStationIdx];
             model.addConstr(startEnergy == E * yearlySocMax - consumptionStart, "e_Start" + subStart);
 
@@ -1014,7 +1231,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
             int endStation = schedulingCfg.stationTrips[endTrip][endStationIdx];
             string subEnd = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(endTrip) + "_s" + to_string(endStation) + "_i" + to_string(endStationIdx);
             double distEnd = networkCfg.endDistanceEBs[eb];
-            GRBLinExpr consumptionEnd = distEnd * (operationCfg.curbWeight + E / operationCfg.energyPerWeright) * operationCfg.mu * operationCfg.g / 3.6;
+            GRBLinExpr consumptionEnd = distEnd * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
             GRBVar endEnergy = energyDep_ybns[year][eb][endTripIdx][endStationIdx];
             model.addConstr(endEnergy >= E * yearlySocMin + consumptionEnd,
                             "e_End" + subEnd);
@@ -1071,7 +1288,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
                     int stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
                     GRBVar arrE = energyArr_ybns[year][ebIdx][tripArrIdx][stationArrIdx];
                     double dist = networkCfg.linkDistances[stationDep][stationArr];
-                    GRBLinExpr consumption = dist * (operationCfg.curbWeight + E / operationCfg.energyPerWeright) * operationCfg.mu * operationCfg.g / 3.6;
+                    GRBLinExpr consumption = dist * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
                     if (isSupportDynamicWireless(modelType)) {
                         GRBVar linkCharge = charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr];
                         model.addConstr(arrE == depE - consumption + linkCharge * chargerCfg.chargeEfficiency[2],
@@ -1094,7 +1311,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
             GRBVar endDepE = energyDep_ybns[year][eb][endTripIdx][stationIdx];
             GRBVar nightCharge = chargeNight_yb[year][eb];
             double dist = networkCfg.endDistanceEBs[eb];
-            GRBLinExpr consumption = dist * (operationCfg.curbWeight + E / operationCfg.energyPerWeright) * operationCfg.mu * operationCfg.g / 3.6;
+            GRBLinExpr consumption = dist * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
             model.addConstr(nightCharge * chargerCfg.chargeEfficiency[0] == E * yearlySocMax - (endDepE - consumption),
                             "e_Overnight_y" + to_string(year) + "_b" + to_string(eb));
         }
@@ -1102,6 +1319,9 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
 
     model.update();
     if (buildProblemDataOnly) {
+        if (externalModel != nullptr) {
+            return true;
+        }
         if (outVars == nullptr || outConstrs == nullptr || outObjSense == nullptr) {
             return false;
         }
@@ -1153,7 +1373,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
                     int endTrip = schedulingCfg.tripEBs[eb][endTripIdx];
                     int endStationIdx = schedulingCfg.stationTrips[endTrip].size() - 1;
                     double distEnd = networkCfg.endDistanceEBs[eb];
-                    GRBLinExpr consumptionEnd = distEnd * (operationCfg.curbWeight + E / operationCfg.energyPerWeright) * operationCfg.mu * operationCfg.g / 3.6;
+                    GRBLinExpr consumptionEnd = distEnd * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
                     double depotArrE = energyDep_ybns[year][ebIdx][endTripIdx][endStationIdx].get(GRB_DoubleAttr_X) - consumptionEnd.getValue();
                     double depotArrSoc = depotArrE / batteryCapacityYear;
                     socFile << depotArrSoc << "\n";
@@ -1182,7 +1402,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
                     int startStationIdx = 0;
                     int startStation = schedulingCfg.stationTrips[startTrip][startStationIdx];
                     double distStart = networkCfg.startDistanceEBs[eb];
-                    GRBLinExpr consumptionStartExpr = distStart * (operationCfg.curbWeight + E / operationCfg.energyPerWeright) * operationCfg.mu * operationCfg.g / 3.6;
+                    GRBLinExpr consumptionStartExpr = distStart * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
                     double arrEStart = energyArr_ybns[year][ebIdx][startTripIdx][startStationIdx].get(GRB_DoubleAttr_X);
                     double depSocStart = operationCfg.socMax; // 出发SoC限制
                     double arrSocStart = arrEStart / batteryCapacityYear;
@@ -1234,7 +1454,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
                     int endStationIdx = schedulingCfg.stationTrips[endTrip].size() - 1;
                     int stationDep = schedulingCfg.stationTrips[endTrip][endStationIdx];
                     double distEnd = networkCfg.endDistanceEBs[eb];
-                    GRBLinExpr consumptionEndExpr = distEnd * (operationCfg.curbWeight + E / operationCfg.energyPerWeright) * operationCfg.mu * operationCfg.g / 3.6;
+                    GRBLinExpr consumptionEndExpr = distEnd * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
                     double depEVal = energyDep_ybns[year][ebIdx][endTripIdx][endStationIdx].get(GRB_DoubleAttr_X);
                     double depotArrE = depEVal - consumptionEndExpr.getValue();
                     double dischargeEnergy = consumptionEndExpr.getValue();
@@ -1538,73 +1758,12 @@ WirelessChargingDataInitializationStrategy_Benders::WirelessChargingDataInitiali
 
 void WirelessChargingDataInitializationStrategy_Benders::DataInit(ProblemData& data)
 {
-    std::string normalizedModelType =
-        LoadModelTypeFromConfig(ResolveDataFolderPath(dataFolder) / "config.txt").value();
-
-    vector<ProblemDataVar> vars;
-    vector<ProblemDataConstr> constrs;
-    int objSense = GRB_MINIMIZE;
-    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(normalizedModelType, dataFolder, false, false, 0,
-        18000.0, true, &vars, &constrs, &objSense);
-    if (!built) {
-        throw std::runtime_error("Failed to build wireless charging model data for Benders.");
-    }
-
-    vector<int> masterIndices;
-    vector<ProblemDataVar> masterVars;
-    masterIndices.reserve(vars.size());
-    masterVars.reserve(vars.size());
-
-    for (int i = 0; i < static_cast<int>(vars.size()); ++i) {
-        if (IsWirelessMasterVarName(vars[static_cast<size_t>(i)].name)) {
-            masterIndices.push_back(i);
-            masterVars.push_back(vars[static_cast<size_t>(i)]);
-        }
-    }
-
-    data.addData("masterVars", masterVars);
-    data.addData("wireless_master_indices", masterIndices);
-    data.addData("wireless_all_vars", vars);
-    data.addData("wireless_all_constrs", constrs);
-    data.addData("wireless_obj_sense", objSense);
-    data.addData("wireless_model_type", normalizedModelType);
-    data.addData("wireless_data_folder", dataFolder);
-
-    std::cout << "Loaded wireless charging data for Benders decomposition." << std::endl;
-    std::cout << "modelType=" << normalizedModelType
-              << ", masterVars=" << masterVars.size()
-              << ", subVars=" << vars.size()
-              << ", subConstrs=" << constrs.size() << std::endl;
+    InitWirelessMasterData(data, dataFolder, "Benders decomposition");
 }
 
 std::vector<ProblemDataConstr> WirelessChargingDataInitializationStrategy_Benders::ConstrInit(ProblemData& data)
 {
-    const auto& allConstrs = data.getData<std::vector<ProblemDataConstr>>("wireless_all_constrs");
-    const auto& masterIndices = data.getData<std::vector<int>>("wireless_master_indices");
-
-    std::vector<ProblemDataConstr> masterConstrs;
-
-    for (const auto& constr : allConstrs) {
-        if (constr.name != "constrEChooseOne") {
-            continue;
-        }
-
-        ProblemDataConstr projected;
-        projected.coeffs.assign(masterIndices.size(), 0.0);
-        projected.sense = constr.sense;
-        projected.rhs = constr.rhs;
-        projected.name = constr.name;
-
-        for (size_t k = 0; k < masterIndices.size(); ++k) {
-            int fullIdx = masterIndices[k];
-            projected.coeffs[k] = constr.coeffs[static_cast<size_t>(fullIdx)];
-        }
-
-        masterConstrs.push_back(projected);
-        break;
-    }
-
-    return masterConstrs;
+    return BuildWirelessMasterConstrs(data);
 }
 
 void WirelessChargingSubProblemStrategy_Benders::InitSubProblem(
@@ -1612,51 +1771,29 @@ void WirelessChargingSubProblemStrategy_Benders::InitSubProblem(
     GRBModel& subModel,
     BendersSubProblemContext& context)
 {
-    const auto& vars = problemData.getData<std::vector<ProblemDataVar>>("wireless_all_vars");
-    const auto& constrs = problemData.getData<std::vector<ProblemDataConstr>>("wireless_all_constrs");
-    const auto& masterIndices = problemData.getData<std::vector<int>>("wireless_master_indices");
-    int objSense = problemData.getData<int>("wireless_obj_sense");
+    const auto& modelType = problemData.getData<std::string>("wireless_model_type");
+    const auto& dataFolder = problemData.getData<std::string>("wireless_data_folder");
+    const auto& masterVars = problemData.getData<std::vector<ProblemDataVar>>("masterVars");
 
     context.Clear();
-    auto& allVars = context.EnsureVarGroup(kWirelessVarGroupAllVars);
-    allVars.reserve(vars.size());
+    auto& masterVarRefs = context.EnsureVarGroup(kWirelessVarGroupAllVars);
+    masterVarRefs.reserve(masterVars.size());
+
+    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(modelType, dataFolder, false, false, 0,
+        18000.0, true, nullptr, nullptr, nullptr, &subModel);
+    if (!built) {
+        throw std::runtime_error("Failed to build wireless charging sub-problem.");
+    }
 
     subModel.set(GRB_IntParam_InfUnbdInfo, 1);
     subModel.set(GRB_IntParam_DualReductions, 0);
+    subModel.set(GRB_IntParam_OutputFlag, 0);
 
-    std::vector<double> objCoeffs(vars.size(), 0.0);
-    for (size_t i = 0; i < vars.size(); ++i) {
-        objCoeffs[i] = vars[i].obj;
+    for (const auto& varData : masterVars) {
+        GRBVar var = subModel.getVarByName(varData.name);
+        var.set(GRB_DoubleAttr_Obj, 0.0);
+        masterVarRefs.push_back(var);
     }
-    for (int idx : masterIndices) {
-        objCoeffs[static_cast<size_t>(idx)] = 0.0;
-    }
-
-    for (size_t i = 0; i < vars.size(); ++i) {
-        const auto& var = vars[i];
-        allVars.push_back(subModel.addVar(var.lb, var.ub, objCoeffs[i], var.type, var.name));
-    }
-
-    for (const auto& constr : constrs) {
-        if (constr.coeffs.size() != allVars.size()) {
-            throw std::runtime_error("Wireless sub-problem constraint size mismatch.");
-        }
-        GRBLinExpr lhs = 0.0;
-        for (size_t i = 0; i < allVars.size(); ++i) {
-            if (std::abs(constr.coeffs[i]) > 1e-12) {
-                lhs += constr.coeffs[i] * allVars[i];
-            }
-        }
-        subModel.addConstr(lhs, constr.sense, constr.rhs, constr.name);
-    }
-
-    GRBLinExpr objective = 0.0;
-    for (size_t i = 0; i < vars.size(); ++i) {
-        if (std::abs(objCoeffs[i]) > 1e-12) {
-            objective += objCoeffs[i] * allVars[i];
-        }
-    }
-    subModel.setObjective(objective, objSense);
     subModel.update();
 
     lowerBoundReady = false;
@@ -1680,14 +1817,16 @@ void WirelessChargingSubProblemStrategy_Benders::UpdateSubProblem(
     BendersSubProblemContext& context,
     const std::vector<double>& yValues)
 {
-    const auto& masterIndices = problemData.getData<std::vector<int>>("wireless_master_indices");
-    auto& allVars = context.EnsureVarGroup(kWirelessVarGroupAllVars);
+    const auto& masterVars = problemData.getData<std::vector<ProblemDataVar>>("masterVars");
+    auto& masterVarRefs = context.EnsureVarGroup(kWirelessVarGroupAllVars);
+    if (masterVarRefs.size() != masterVars.size() || yValues.size() != masterVars.size()) {
+        throw std::runtime_error("Wireless Benders master variable context size mismatch.");
+    }
 
-    for (size_t i = 0; i < masterIndices.size(); ++i) {
-        int varIdx = masterIndices[i];
+    for (size_t i = 0; i < masterVars.size(); ++i) {
         double fixedValue = (yValues[i] > 0.5) ? 1.0 : 0.0;
-        allVars[static_cast<size_t>(varIdx)].set(GRB_DoubleAttr_LB, fixedValue);
-        allVars[static_cast<size_t>(varIdx)].set(GRB_DoubleAttr_UB, fixedValue);
+        masterVarRefs[i].set(GRB_DoubleAttr_LB, fixedValue);
+        masterVarRefs[i].set(GRB_DoubleAttr_UB, fixedValue);
     }
 
     subModel.update();
@@ -1763,5 +1902,180 @@ Status WirelessChargingSubProblemStrategy_Benders::SolveSubProblem(
 
     std::cerr << "Wireless Benders sub-problem ended with unexpected status: " << status << std::endl;
     return ERROR;
+}
+
+WirelessChargingDataInitializationStrategy_LShaped::WirelessChargingDataInitializationStrategy_LShaped(
+    std::string dataFolder)
+    : dataFolder(std::move(dataFolder)) {}
+
+void WirelessChargingDataInitializationStrategy_LShaped::DataInit(ProblemData& data)
+{
+    InitWirelessMasterData(data, dataFolder, "integer L-shaped decomposition");
+}
+
+std::vector<ProblemDataConstr> WirelessChargingDataInitializationStrategy_LShaped::ConstrInit(ProblemData& data)
+{
+    return BuildWirelessMasterConstrs(data);
+}
+
+std::vector<double> WirelessChargingDataInitializationStrategy_LShaped::BuildWarmStartMasterValues(
+    const ProblemData& data) const
+{
+    const auto& masterVars = data.getData<std::vector<ProblemDataVar>>("masterVars");
+    std::vector<double> warmStart(masterVars.size(), 0.0);
+
+    int maxCapacityIdx = -1;
+    double maxCapacity = -1.0;
+    for (size_t idx = 0; idx < masterVars.size(); ++idx) {
+        double capacity = 0.0;
+        if (TryParseBatteryChoiceCapacity(masterVars[idx].name, capacity)) {
+            if (capacity > maxCapacity) {
+                maxCapacity = capacity;
+                maxCapacityIdx = static_cast<int>(idx);
+            }
+            continue;
+        }
+
+        warmStart[idx] = 1.0;
+    }
+
+    if (maxCapacityIdx < 0) {
+        throw std::runtime_error("Wireless L-shaped warm start requires at least one battery choice variable.");
+    }
+
+    warmStart[static_cast<size_t>(maxCapacityIdx)] = 1.0;
+    return warmStart;
+}
+
+bool WirelessChargingDataInitializationStrategy_LShaped::IsWarmStartMasterFeasible(const ProblemData& data,
+    const std::vector<double>& zValues, double tolerance) const
+{
+    return true;
+}
+
+void WirelessChargingSubProblemStrategy_LShaped::InitSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    IntegerLShapedSubProblemContext& context)
+{
+    bendersImpl.InitSubProblem(problemData, subModel, context);
+    InitRelaxedSubProblem(problemData, subModel);
+}
+
+void WirelessChargingSubProblemStrategy_LShaped::UpdateSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues)
+{
+    bendersImpl.UpdateSubProblem(problemData, subModel, context, zValues);
+}
+
+void WirelessChargingSubProblemStrategy_LShaped::InitRelaxedSubProblem(
+    const ProblemData& problemData, GRBModel& subModel)
+{
+    const auto& masterVars = problemData.getData<std::vector<ProblemDataVar>>("masterVars");
+
+    relaxedModel = std::make_unique<GRBModel>(subModel.relax());
+    relaxedModel->set(GRB_IntParam_OutputFlag, 0);
+    relaxedModel->set(GRB_IntParam_InfUnbdInfo, 1);
+    relaxedModel->set(GRB_IntParam_DualReductions, 0);
+    relaxedModel->set(GRB_IntParam_Method, 2);
+    relaxedModel->set(GRB_IntParam_Crossover, 0);
+
+    relaxedMasterVars.clear();
+    relaxedFixConstrs.clear();
+    relaxedMasterVars.reserve(masterVars.size());
+    relaxedFixConstrs.reserve(masterVars.size());
+
+    for (size_t i = 0; i < masterVars.size(); ++i) {
+        const auto& varData = masterVars[i];
+        GRBVar yVar = relaxedModel->getVarByName(varData.name);
+        yVar.set(GRB_DoubleAttr_LB, -GRB_INFINITY);
+        yVar.set(GRB_DoubleAttr_UB, GRB_INFINITY);
+
+        const std::string constrName = "wireless_relax_fix_" + std::to_string(i);
+        GRBConstr fixConstr = relaxedModel->addConstr(yVar == 0.0, constrName);
+        relaxedMasterVars.push_back(yVar);
+        relaxedFixConstrs.push_back(fixConstr);
+    }
+
+    relaxedModel->update();
+}
+
+Status WirelessChargingSubProblemStrategy_LShaped::SolveRelaxedModel(
+    const ProblemData& problemData, const std::vector<double>& zValues,
+    IntegerLShapedCutInfo& cutInfo, double& subObj)
+{
+    try {
+        const auto& masterVars = problemData.getData<std::vector<ProblemDataVar>>("masterVars");
+        if (zValues.size() != masterVars.size() ||
+            relaxedMasterVars.size() != masterVars.size() ||
+            relaxedFixConstrs.size() != masterVars.size() ||
+            !relaxedModel) {
+            std::cerr << "Wireless relaxed sub-problem: relaxed model is not initialized" << std::endl;
+            return ERROR;
+        }
+
+        for (size_t i = 0; i < zValues.size(); ++i) {
+            relaxedMasterVars[i].set(GRB_DoubleAttr_LB, -GRB_INFINITY);
+            relaxedMasterVars[i].set(GRB_DoubleAttr_UB, GRB_INFINITY);
+            relaxedFixConstrs[i].set(GRB_DoubleAttr_RHS, zValues[i]);
+        }
+
+        relaxedModel->update();
+        relaxedModel->optimize();
+
+        const int status = relaxedModel->get(GRB_IntAttr_Status);
+        if (status == GRB_OPTIMAL) {
+            subObj = relaxedModel->get(GRB_DoubleAttr_ObjVal);
+
+            cutInfo.isOptimalityCut = true;
+            cutInfo.sense = '>';
+            cutInfo.rhs = 0.0;
+            cutInfo.yCoeffs.assign(zValues.size(), 0.0);
+            cutInfo.constant = subObj;
+
+            for (size_t i = 0; i < relaxedFixConstrs.size(); ++i) {
+                const double pi = relaxedFixConstrs[i].get(GRB_DoubleAttr_Pi);
+                cutInfo.yCoeffs[i] = pi;
+                cutInfo.constant -= pi * zValues[i];
+            }
+            return OK;
+        }
+
+        if (status == GRB_INFEASIBLE || status == GRB_INF_OR_UNBD || status == GRB_UNBOUNDED) {
+            Status certStatus = SolveWirelessRelaxedForFarkas(*relaxedModel);
+            if (certStatus == OK) {
+                Status cutStatus = BuildWirelessFarkasFeasibilityCut(*relaxedModel, relaxedFixConstrs, zValues, cutInfo);
+                if (cutStatus != OK) {
+                    return cutStatus;
+                }
+            } else {
+                BuildWirelessNoGoodFeasibilityCut(zValues, cutInfo);
+            }
+            subObj = GRB_INFINITY;
+            return OK;
+        }
+
+        std::cerr << "Wireless relaxed sub-problem ended with unexpected status: " << status << std::endl;
+        return ERROR;
+    } catch (const GRBException& e) {
+        std::cerr << "Wireless relaxed sub-problem failed: " << e.getMessage() << std::endl;
+        return ERROR;
+    } catch (const std::exception& e) {
+        std::cerr << "Wireless relaxed sub-problem failed: " << e.what() << std::endl;
+        return ERROR;
+    }
+}
+
+Status WirelessChargingSubProblemStrategy_LShaped::SolveSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues,
+    IntegerLShapedCutInfo& cutInfo, double& subObj)
+{
+    return bendersImpl.SolveSubProblem(problemData, subModel, context, zValues, cutInfo, subObj);
+}
+
+Status WirelessChargingSubProblemStrategy_LShaped::SolveRelaxedSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues,
+    IntegerLShapedCutInfo& cutInfo, double& subObj)
+{
+    UpdateSubProblem(problemData, subModel, context, zValues);
+    return SolveRelaxedModel(problemData, zValues, cutInfo, subObj);
 }
 

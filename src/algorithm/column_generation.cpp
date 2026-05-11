@@ -2,13 +2,13 @@
 #include "cutting_stock_problem.hpp"
 #include "tools.hpp"
 
+#include <cmath>
 #include <functional>
 #include <iostream>
-#include <vector>
-#include <string>
 #include <limits>
-#include <cmath>
 #include <map>
+#include <string>
+#include <vector>
 
 static const std::map<ProblemType,
                       std::tuple<std::function<std::unique_ptr<IDataInitializationStrategy_CG>(const std::string&)>,
@@ -199,9 +199,11 @@ void ColumnGeneration::UpdateMP()
 
 Status ColumnGeneration::Solve()
 {
+    const auto solveStart = Tools::Clock::now();
     int iter = 0;
 
     while (iter <= maxIters) {
+        const auto iterStart = Tools::Clock::now();
         UpdateMP();
         model->optimize(); // RLMP
         int solveStatus = model->get(GRB_IntAttr_Status);
@@ -220,13 +222,21 @@ Status ColumnGeneration::Solve()
         }
 
         bool needUpdate = sub->FindNewPatterns(*problemData, duals);
+        const auto iterEnd = Tools::Clock::now();
+        std::cout << "ColumnGeneration iter " << iter
+                  << ", needUpdate=" << (needUpdate ? "true" : "false")
+                  << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
         if (!needUpdate) {
             Debug::OutputResult(model);
+            const auto solveEnd = Tools::Clock::now();
+            std::cout << "ColumnGeneration final solve time: " << Tools::ElapsedMs(solveStart, solveEnd) << " ms" << std::endl;
             return OK;
         }
 
         iter++;
     }
+    const auto solveEnd = Tools::Clock::now();
+    std::cout << "ColumnGeneration final solve time: " << Tools::ElapsedMs(solveStart, solveEnd) << " ms" << std::endl;
     return OK;
 }
 

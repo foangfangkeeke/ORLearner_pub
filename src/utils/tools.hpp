@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <iostream>
 #include <memory>
@@ -19,6 +20,12 @@ inline std::string PatternToString(const std::vector<int>& pattern) {
 }
 
 namespace Tools {
+    using Clock = std::chrono::steady_clock;
+
+    inline long long ElapsedMs(Clock::time_point start, Clock::time_point end) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    }
+
     inline std::string Trim(const std::string& text) {
         size_t left = 0;
         while (left < text.size() && std::isspace(static_cast<unsigned char>(text[left]))) {

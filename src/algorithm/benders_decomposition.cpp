@@ -165,8 +165,10 @@ Status BendersDecomposition::Initialize()
 
 Status BendersDecomposition::Solve()
 {
+    const auto solveStart = Tools::Clock::now();
     int iter = 0;
     while (iter < maxIters) {
+        const auto iterStart = Tools::Clock::now();
         model->optimize();
         int masterStatus = model->get(GRB_IntAttr_Status);
         if (!(masterStatus == GRB_OPTIMAL || (masterStatus == GRB_TIME_LIMIT && model->get(GRB_IntAttr_SolCount) > 0))) {
@@ -227,9 +229,10 @@ Status BendersDecomposition::Solve()
             double relGap = (bestUpperBound - bestLowerBound) / denom;
             std::cout << ", gap=" << relGap * 100.0 << "%, " << (cutInfo.isOptimalityCut ? "opt cut" : "feas cut");
         }
-        std::cout << std::endl;
 
         if (!cutAdded) {
+            const auto iterEnd = Tools::Clock::now();
+            std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
             std::cout << "Active master variables:" << std::endl;
             for (const auto& yVar : yVars) {
                 const double value = yVar.get(GRB_DoubleAttr_X);
@@ -241,10 +244,15 @@ Status BendersDecomposition::Solve()
             std::cout << "theta: " << theta.get(GRB_DoubleAttr_X) << std::endl;
             std::cout << "objective: " << model->get(GRB_DoubleAttr_ObjVal) << std::endl;
             std::cout << "Benders converged with no violated cuts." << std::endl;
+            const auto solveEnd = Tools::Clock::now();
+            std::cout << "Benders final solve time: " << Tools::ElapsedMs(solveStart, solveEnd) << " ms" << std::endl;
             return OK;
         }
 
         model->update();
+        const auto iterEnd = Tools::Clock::now();
+
+        std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
 
         ++iter;
     }

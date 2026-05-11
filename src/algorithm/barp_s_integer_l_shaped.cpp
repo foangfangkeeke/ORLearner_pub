@@ -208,7 +208,9 @@ IntegerLShaped::CutEval IntegerLShaped::BuildContinuousCut(const IntegerLShapedC
 
 Status IntegerLShaped::Solve()
 {
+    const auto solveStart = Tools::Clock::now();
     for (int iter = 0; iter < maxIters; ++iter) {
+        const auto iterStart = Tools::Clock::now();
         model->optimize();
         int masterStatus = model->get(GRB_IntAttr_Status);
         if (!(masterStatus == GRB_OPTIMAL ||
@@ -243,8 +245,9 @@ Status IntegerLShaped::Solve()
                 std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound
                           << ", gap=" << (bestUpperBound - bestLowerBound) / denom * 100.0 << "%";
             }
-            std::cout << std::endl;
             model->update();
+            const auto iterEnd = Tools::Clock::now();
+            std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
             continue;
         }
         // Relaxed sub-problem feasible and can be cut.
@@ -259,7 +262,9 @@ Status IntegerLShaped::Solve()
             const CutEval cutContinuous = BuildContinuousCut(continuousCutInfo, zValues, iter);
             model->addConstr(cutContinuous.expr <= theta, cutContinuous.name);
             model->update();
-            std::cout << ", cut from relaxation" << std::endl;
+            const auto iterEnd = Tools::Clock::now();
+            std::cout << ", cut from relaxation"
+                      << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
             continue;
         }
 
@@ -281,9 +286,10 @@ Status IntegerLShaped::Solve()
                 const double denom = std::max(1.0, std::fabs(bestUpperBound));
                 std::cout << ", gap=" << (bestUpperBound - bestLowerBound) / denom * 100.0 << "%";
             }
-            std::cout << std::endl;
 
             model->update();
+            const auto iterEnd = Tools::Clock::now();
+            std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
             continue;
         }
 
@@ -303,17 +309,22 @@ Status IntegerLShaped::Solve()
             double denom = std::max(1.0, std::fabs(bestUpperBound));
             std::cout << ", gap=" << (bestUpperBound - bestLowerBound) / denom * 100.0 << "%";
         }
-        std::cout << std::endl;
 
         if (thetaValue + tolerance >= aggregatedQValue) {
+            const auto iterEnd = Tools::Clock::now();
+            std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
             PrintBestSolution();
             std::cout << "Integer L-shaped converged." << std::endl;
+            const auto solveEnd = Tools::Clock::now();
+            std::cout << "Integer L-shaped final solve time: " << Tools::ElapsedMs(solveStart, solveEnd) << " ms" << std::endl;
             return OK;
         }
 
         // model->addConstr(cutImproved.expr <= theta, cutImproved.name); // TODO: not available for all problem types.
         model->addConstr(cutPriority.expr <= theta, cutPriority.name);
         model->update();
+        const auto iterEnd = Tools::Clock::now();
+        std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
     }
 
     std::cout << "Integer L-shaped reached max iterations: " << maxIters << std::endl;

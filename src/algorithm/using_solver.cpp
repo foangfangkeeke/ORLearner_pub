@@ -4,6 +4,7 @@
 #include "wireless_charging_strategies.hpp"
 #include "using_solver.hpp"
 #include "test.hpp"
+#include "tools.hpp"
 
 #include <functional>
 #include <iostream>
@@ -53,10 +54,14 @@ Status UsingSolver::Initialize()
 
 Status UsingSolver::Solve()
 {
+    const auto solveStart = Tools::Clock::now();
     model->optimize();
+
     int solveStatus = model->get(GRB_IntAttr_Status);
     if (solveStatus == GRB_OPTIMAL || (solveStatus == GRB_TIME_LIMIT && model->get(GRB_IntAttr_SolCount) > 0)) {
         std::cout << "Current objective: " << model->get(GRB_DoubleAttr_ObjVal) << std::endl;
+        const auto solveEnd = Tools::Clock::now();
+        std::cout << "UsingSolver final solve time: " << Tools::ElapsedMs(solveStart, solveEnd) << " ms" << std::endl;
         return OK;
     }
 

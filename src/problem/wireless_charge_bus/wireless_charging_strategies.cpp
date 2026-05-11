@@ -627,7 +627,7 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
 
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
             vector<unordered_map<int, GRBVar>> charge_yb;
             vector<vector<GRBVar>> energyDep_yb;
             vector<vector<GRBVar>> energyArr_yb;
@@ -638,7 +638,7 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
             energyShortageArr_yb.reserve(numEBTrip);
 
             for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
                 unordered_map<int, GRBVar> charge_ybn;
                 vector<GRBVar> energyDep_ybn;
@@ -681,9 +681,9 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
         unordered_map<int, unordered_map<int, unordered_map<int, unordered_map<int, GRBVar>>>> x_y;
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
             for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
                 for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
                     int station = schedulingCfg.stationTrips[trip][stationIdx];
@@ -716,11 +716,11 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
         vector<vector<unordered_map<int, unordered_map<int, GRBVar>>>> charge_y;
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             auto eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
             vector<unordered_map<int, unordered_map<int, GRBVar>>> charge_yb;
             charge_yb.reserve(numEBTrip);
             for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                auto tripDep = schedulingCfg.tripEBs[eb][tripIdx];
+                auto tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
                 unordered_map<int, unordered_map<int, GRBVar>> charge_ybn;
                 for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
@@ -729,10 +729,10 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
                     int stationArr;
                     int stationArrIdx;
                     if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                        if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
+                        if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
                             continue;
                         }
-                        tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
+                        tripArr = schedulingCfg.tripEBs[ebIdx][tripIdx + 1];
                         stationArrIdx = 0;
                         stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
                     } else {
@@ -767,9 +767,10 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
 
     for (int year = 0; year < batteryLifespan; year++) {
         GRBLinExpr sum_day = 0;
-        for (int eb : schedulingCfg.EBs) {
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
-                for (const auto& [_, chargeVar] : charge_ybns[year][eb][tripIdx]) {
+        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+            int eb = schedulingCfg.EBs[ebIdx];
+            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+                for (const auto& [_, chargeVar] : charge_ybns[year][ebIdx][tripIdx]) {
                     sum_day += chargeVar;
                 }
             }
@@ -777,9 +778,9 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
 
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
             for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
+                int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
                 for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
                     int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
@@ -789,7 +790,7 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
                         if (tripIdx == numEBTrip - 1) {
                             continue;
                         }
-                        tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
+                        tripArr = schedulingCfg.tripEBs[ebIdx][tripIdx + 1];
                         stationArr = schedulingCfg.stationTrips[tripArr][0];
                     } else {
                         tripArr = tripDep;
@@ -809,9 +810,9 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
         GRBLinExpr sum_energy_shortage = 0;
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
             for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
                 for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
                     sum_energy_shortage += energyShortageArr_ybns[year][ebIdx][tripIdx][stationIdx];
@@ -896,9 +897,9 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
         double yearlySocMin = operationCfg.socMin * yearlyBatteryCapacityFactor;
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
             for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
                 for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
                     int station = schedulingCfg.stationTrips[trip][stationIdx];
@@ -917,9 +918,9 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     // number of fast charger
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
             for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
                 for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
                     int station = schedulingCfg.stationTrips[trip][stationIdx];
@@ -946,8 +947,8 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     // c_bns in fast charging stations
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
-                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
                     int station = schedulingCfg.stationTrips[trip][stationIdx];
                     if (!networkCfg.chargerPhys.count(station)) {
@@ -968,8 +969,8 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     // c_bns in static wireless charging stations
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
-                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
                     int station = schedulingCfg.stationTrips[trip][stationIdx];
                     if (networkCfg.chargerPhys.count(station)) {
@@ -988,14 +989,14 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     // c_bnl in dynamic wireless charging links
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
-                int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
+            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+                int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[tripDep].size(); stationIdx++) {
                     int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
                     int tripArrIdx;
                     int stationArrIdx;
                     if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                        if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
+                        if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
                             continue;
                         }
                         tripArrIdx = tripIdx + 1;
@@ -1005,7 +1006,7 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
                         stationArrIdx = stationIdx + 1;
                     }
 
-                    int tripArr = schedulingCfg.tripEBs[eb][tripArrIdx];
+                    int tripArr = schedulingCfg.tripEBs[ebIdx][tripArrIdx];
                     int stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
 
                     string subCharge = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
@@ -1024,15 +1025,15 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     // energy of the first and the last trips
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            const auto& trips = schedulingCfg.tripEBs[eb];
+            const auto& trips = schedulingCfg.tripEBs[ebIdx];
             int startTripIdx = 0;
             int startTrip = trips[startTripIdx];
             int startStationIdx = 0;
             int startStation = schedulingCfg.stationTrips[startTrip][startStationIdx];
             string subStart = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(startTrip) + "_s" + to_string(startStation) + "_i" + to_string(startStationIdx);
-            double distStart = networkCfg.startDistanceEBs[eb];
+            double distStart = networkCfg.startDistanceEBs[ebIdx];
             GRBLinExpr consumptionStart = distStart * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-            GRBVar startEnergy = energyArr_ybns[year][eb][startTripIdx][startStationIdx];
+            GRBVar startEnergy = energyArr_ybns[year][ebIdx][startTripIdx][startStationIdx];
             model.addConstr(startEnergy == E * yearlySocMax - consumptionStart, "e_Start" + subStart);
 
             int endTripIdx = trips.size() - 1;
@@ -1040,9 +1041,9 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
             int endStationIdx = schedulingCfg.stationTrips[endTrip].size() - 1;
             int endStation = schedulingCfg.stationTrips[endTrip][endStationIdx];
             string subEnd = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(endTrip) + "_s" + to_string(endStation) + "_i" + to_string(endStationIdx);
-            double distEnd = networkCfg.endDistanceEBs[eb];
+            double distEnd = networkCfg.endDistanceEBs[ebIdx];
             GRBLinExpr consumptionEnd = distEnd * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-            GRBVar endEnergy = energyDep_ybns[year][eb][endTripIdx][endStationIdx];
+            GRBVar endEnergy = energyDep_ybns[year][ebIdx][endTripIdx][endStationIdx];
             GRBVar endShortage = energyShortageArrEnd_yb[year][ebIdx];
             model.addConstr(endEnergy + endShortage >= E * yearlySocMin + consumptionEnd, "e_End" + subEnd);
         }
@@ -1050,8 +1051,8 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     // inner station energy connection
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
-                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
                     int station = schedulingCfg.stationTrips[trip][stationIdx];
                     string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
@@ -1074,8 +1075,8 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     // inter station energy connection
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
-                int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
+            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+                int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[tripDep].size(); stationIdx++) {
                     int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
                     string subDep = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) + "_i" + to_string(stationIdx);
@@ -1083,7 +1084,7 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
                     int tripArrIdx;
                     int stationArrIdx;
                     if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                        if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
+                        if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
                             continue;
                         }
                         tripArrIdx = tripIdx + 1;
@@ -1093,7 +1094,7 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
                         stationArrIdx = stationIdx + 1;
                     }
 
-                    int tripArr = schedulingCfg.tripEBs[eb][tripArrIdx];
+                    int tripArr = schedulingCfg.tripEBs[ebIdx][tripArrIdx];
                     int stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
                     GRBVar arrE = energyArr_ybns[year][ebIdx][tripArrIdx][stationArrIdx];
                     double dist = networkCfg.linkDistances[stationDep][stationArr];
@@ -1106,17 +1107,18 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
         }
 
     // overnight charging
-        for (int eb : schedulingCfg.EBs) {
-            const auto& trips = schedulingCfg.tripEBs[eb];
+        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+            int eb = schedulingCfg.EBs[ebIdx];
+            const auto& trips = schedulingCfg.tripEBs[ebIdx];
             int endTripIdx = trips.size() - 1;
             int endTrip = trips[endTripIdx];
             int stationIdx = schedulingCfg.stationTrips[endTrip].size() - 1;
             int station = schedulingCfg.stationTrips[endTrip][stationIdx];
             string subEnd = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(endTrip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
-            GRBVar endDepE = energyDep_ybns[year][eb][endTripIdx][stationIdx];
-            GRBVar endShortage = energyShortageArrEnd_yb[year][eb];
-            GRBVar nightCharge = chargeNight_yb[year][eb];
-            double dist = networkCfg.endDistanceEBs[eb];
+            GRBVar endDepE = energyDep_ybns[year][ebIdx][endTripIdx][stationIdx];
+            GRBVar endShortage = energyShortageArrEnd_yb[year][ebIdx];
+            GRBVar nightCharge = chargeNight_yb[year][ebIdx];
+            double dist = networkCfg.endDistanceEBs[ebIdx];
             GRBLinExpr consumption = dist * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
             model.addConstr(nightCharge * chargerCfg.chargeEfficiency[0] == E * yearlySocMax - (endDepE + endShortage - consumption),
                             "e_Overnight_y" + to_string(year) + "_b" + to_string(eb));
@@ -1190,7 +1192,7 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder, GRBMode
 
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
             vector<unordered_map<int, GRBVar>> charge_yb;
             vector<vector<GRBVar>> energyDep_yb;
             vector<vector<GRBVar>> energyArr_yb;
@@ -1199,7 +1201,7 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder, GRBMode
             energyArr_yb.reserve(numEBTrip);
 
             for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
                 unordered_map<int, GRBVar> charge_ybn;
                 vector<GRBVar> energyDep_ybn;
@@ -1233,11 +1235,11 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder, GRBMode
         charge_y.reserve(numEB);
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
             vector<unordered_map<int, unordered_map<int, GRBVar>>> charge_yb;
             charge_yb.reserve(numEBTrip);
             for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
+                int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
                 unordered_map<int, unordered_map<int, GRBVar>> charge_ybn;
                 for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
@@ -1246,10 +1248,10 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder, GRBMode
                     int stationArr;
                     int stationArrIdx;
                     if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                        if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
+                        if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
                             continue;
                         }
-                        tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
+                        tripArr = schedulingCfg.tripEBs[ebIdx][tripIdx + 1];
                         stationArrIdx = 0;
                         stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
                     } else {
@@ -1275,9 +1277,9 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder, GRBMode
         unordered_map<int, unordered_map<int, unordered_map<int, unordered_map<int, GRBVar>>>> x_y;
         for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
             int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
             for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
                 size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
                 for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
                     int station = schedulingCfg.stationTrips[trip][stationIdx];

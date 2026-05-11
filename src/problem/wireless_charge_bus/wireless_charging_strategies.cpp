@@ -36,37 +36,6 @@ inline fs::path ResolveDataFolderPath(const string& dataFolder) {
     return fs::path(__FILE__).parent_path() / dataFolder;
 }
 
-static optional<string> LoadModelTypeFromConfig(const fs::path& filePath) {
-    ifstream fin(filePath);
-    if (!fin.is_open()) {
-        return nullopt;
-    }
-
-    string line;
-    while (getline(fin, line)) {
-        line = Tools::Trim(line);
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
-
-        size_t sepPos = line.find('=');
-        if (sepPos == string::npos) {
-            sepPos = line.find(':');
-        }
-        if (sepPos == string::npos) {
-            continue;
-        }
-
-        string key = Tools::ToLower(Tools::Trim(line.substr(0, sepPos)));
-        string value = Tools::ToUpper(Tools::Trim(line.substr(sepPos + 1)));
-        if ((key == "modeltype" || key == "model_type" || key == "model") && !value.empty()) {
-            return value;
-        }
-    }
-
-    return nullopt;
-}
-
 static optional<stringCfgType> LoadStringTable(const fs::path& filePath) {
     ifstream fin(filePath);
     if (!fin.is_open()) {
@@ -143,18 +112,6 @@ static optional<linkTimeType> LoadLinkDistance(const fs::path& filePath) {
         return nullopt;
     }
     return links;
-}
-
-inline bool isSupportStaticWireless(const string& modelType) {
-    return modelType == "M2" || modelType == "M4";
-}
-
-inline bool isSupportDynamicWireless(const string& modelType) {
-    return modelType == "M3" || modelType == "M4";
-}
-
-inline bool isValidModelType(const string& modelType) {
-    return modelType == "M1" || modelType == "M2" || modelType == "M3" || modelType == "M4";
 }
 
 inline double getSoH(const int& y, const vector<double>& batteryDegradation) {
@@ -406,7 +363,7 @@ static double CalcWirelessBatteryChoiceObjCoeff(const ModelData& data)
         (static_cast<double>(batteriesNeeded) - salvageCapacitySum * operationCfg.recyclingPriceRate);
 }
 
-static vector<ProblemDataVar> BuildWirelessMasterVars(const string& modelType, const ModelData& data)
+static vector<ProblemDataVar> BuildWirelessMasterVars(const ModelData& data)
 {
     const OperationCfg& operationCfg = data.GetOperationCfg();
     const ChargerCfg& chargerCfg = data.GetChargerCfg();
@@ -428,46 +385,42 @@ static vector<ProblemDataVar> BuildWirelessMasterVars(const string& modelType, c
         masterVars.push_back(var);
     }
 
-    if (isSupportStaticWireless(modelType)) {
-        vector<int> stations(networkCfg.stationPhys.begin(), networkCfg.stationPhys.end());
-        sort(stations.begin(), stations.end());
-        const double stationCost =
-            (60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[1] + chargerCfg.priceOfUnitCharger[1]) * 2;
-        for (int station : stations) {
-            if (networkCfg.chargerPhys.count(station)) {
-                continue;
-            }
-
-            ProblemDataVar var;
-            var.lb = 0.0;
-            var.ub = 1.0;
-            var.obj = stationCost;
-            var.type = GRB_BINARY;
-            var.name = "w_station_s" + to_string(station);
-            masterVars.push_back(var);
+    vector<int> stations(networkCfg.stationPhys.begin(), networkCfg.stationPhys.end());
+    sort(stations.begin(), stations.end());
+    const double stationCost =
+        (60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[1] + chargerCfg.priceOfUnitCharger[1]) * 2;
+    for (int station : stations) {
+        if (networkCfg.chargerPhys.count(station)) {
+            continue;
         }
+
+        ProblemDataVar var;
+        var.lb = 0.0;
+        var.ub = 1.0;
+        var.obj = stationCost;
+        var.type = GRB_BINARY;
+        var.name = "w_station_s" + to_string(station);
+        masterVars.push_back(var);
     }
 
-    if (isSupportDynamicWireless(modelType)) {
-        vector<pair<int, int>> links;
-        for (const auto& [start, endMap] : networkCfg.linkDistances) {
-            for (const auto& [end, _] : endMap) {
-                links.emplace_back(start, end);
-            }
+    vector<pair<int, int>> links;
+    for (const auto& [start, endMap] : networkCfg.linkDistances) {
+        for (const auto& [end, _] : endMap) {
+            links.emplace_back(start, end);
         }
-        sort(links.begin(), links.end());
+    }
+    sort(links.begin(), links.end());
 
-        for (const auto& [start, end] : links) {
-            const double dist = networkCfg.linkDistances.at(start).at(end);
-            ProblemDataVar var;
-            var.lb = 0.0;
-            var.ub = 1.0;
-            var.obj = chargerCfg.priceOfUnitCharger[2] * dist +
-                60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[2];
-            var.type = GRB_BINARY;
-            var.name = "w_link_l" + to_string(start) + "To" + to_string(end);
-            masterVars.push_back(var);
-        }
+    for (const auto& [start, end] : links) {
+        const double dist = networkCfg.linkDistances.at(start).at(end);
+        ProblemDataVar var;
+        var.lb = 0.0;
+        var.ub = 1.0;
+        var.obj = chargerCfg.priceOfUnitCharger[2] * dist +
+            60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[2];
+        var.type = GRB_BINARY;
+        var.name = "w_link_l" + to_string(start) + "To" + to_string(end);
+        masterVars.push_back(var);
     }
 
     return masterVars;
@@ -475,19 +428,15 @@ static vector<ProblemDataVar> BuildWirelessMasterVars(const string& modelType, c
 
 static void InitWirelessMasterData(ProblemData& data, const string& dataFolder, const string& usageLabel)
 {
-    std::string normalizedModelType =
-        LoadModelTypeFromConfig(ResolveDataFolderPath(dataFolder) / "config.txt").value();
     ModelData modelData(dataFolder);
-    vector<ProblemDataVar> masterVars = BuildWirelessMasterVars(normalizedModelType, modelData);
+    vector<ProblemDataVar> masterVars = BuildWirelessMasterVars(modelData);
 
     data.addData("masterVars", masterVars);
-    data.addData("wireless_model_type", normalizedModelType);
     data.addData("wireless_data_folder", dataFolder);
     data.addData("wireless_scenario_count", 1);
 
     std::cout << "Loaded wireless charging data for " << usageLabel << "." << std::endl;
-    std::cout << "modelType=" << normalizedModelType
-              << ", scenarios=1"
+    std::cout << "scenarios=1"
               << ", masterVars=" << masterVars.size() << std::endl;
 }
 
@@ -580,14 +529,13 @@ static Status SolveWirelessRelaxedForFarkas(GRBModel& relaxedModel)
 struct WirelessGurobiOptions {
     bool allowOutputSolution = false;
     bool outputSolverLog = false;
-    double mipGap = 0.0;
+    double mipGap = -1.0;
     double timeLimit = 18000.0;
     bool buildProblemDataOnly = false;
     GRBModel* externalModel = nullptr;
 };
 
-static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& modelType, const string& dataFolder,
-    const WirelessGurobiOptions& options) {
+static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& dataFolder, const WirelessGurobiOptions& options) {
 
     auto timeRecordStart = chrono::high_resolution_clock::now();
     unique_ptr<ModelData> data = make_unique<ModelData>(dataFolder);
@@ -598,8 +546,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     SchedulingCfg schedulingCfg = data->GetSchedulingCfg();
     NetworkCfg networkCfg = data->GetNetworkCfg();
     fs::path dataFolderPath = data->GetDataFolderPath();
-    string runId = modelType;
-    fs::path resultDir = dataFolderPath / runId;
+    fs::path resultDir = dataFolderPath;
     fs::create_directories(resultDir);
     fs::path solutionPath = resultDir / "solution.sol";
     fs::path summaryPath = resultDir / "summary.txt";
@@ -624,9 +571,10 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     }
 
     GRBModel& model = *modelPtr;
-    model.set(GRB_StringAttr_ModelName, runId);
 
-    model.set(GRB_DoubleParam_MIPGap, options.mipGap);
+    if (options.mipGap >= 0.0) {
+        model.set(GRB_DoubleParam_MIPGap, options.mipGap);
+    }
     model.set(GRB_DoubleParam_TimeLimit, options.timeLimit);
     model.set(GRB_IntParam_Presolve, 2);
     model.set(GRB_IntParam_MIPFocus, 1); // 优先改进可行解
@@ -685,15 +633,11 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     };
 
     vector<double> batteryOptions;
-    vector<double> batterySocDrops; // 总路程能耗占容量的比值
-    // for (int cap = ((modelType == "M1") ? 200 : 30); cap <= ((modelType == "M1") ? 300 : 100); cap += 10) {
     for (double cap = operationCfg.capacityMin; cap <= operationCfg.capacityMax; cap += 10.0) {
         if (cap <= 0.0) {
             continue;
         }
         batteryOptions.push_back(cap);
-        double totalEnergy = calcTotalEnergyForCapacity(cap);
-        batterySocDrops.push_back(totalEnergy / cap);
     }
 
     vector<GRBVar> batteryChoice;
@@ -781,9 +725,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
                     energyDep_ybn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varNameEnergyDep));
                     energyArr_ybn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varNameEnergyArr));
                     string varNameCharge = "c" + sub;
-                    if (isSupportStaticWireless(modelType) || networkCfg.chargerPhys.count(station)) {
-                        charge_ybn[station] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varNameCharge);
-                    }
+                    charge_ybn[station] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varNameCharge);
                 }
                 charge_yb.push_back(charge_ybn);
                 energyDep_yb.push_back(energyDep_ybn);
@@ -826,93 +768,59 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     }
 
     // static wireless charging facility
-    if (isSupportStaticWireless(modelType)) {
-        for (const int& station : networkCfg.stationPhys) {
-            if (!networkCfg.chargerPhys.count(station)) {
-                string varName = "w_station_s" + to_string(station);
-                // if (modelType == "M2") {
-                //     if (station == 396 || station == 312 || station == 399 || station == 283 || station == 115 || station == 75 || station == 118 || station == 178 || station == 57 || station == 107 || station == 139 || station == 154 || station == 347 || station == 180 || station == 86 || station == 305 || station == 289 || station == 371 || station == 88 || station == 18 || station == 34 || station == 102 || station == 32 || station == 408 || station == 411) {
-                //         wirelessStation[station] = model.addVar(1, 1, 1, GRB_BINARY, varName);
-                //     } else {
-                //         wirelessStation[station] = model.addVar(0, 0, 0, GRB_BINARY, varName);
-                //     }
-                // } else if (modelType == "M4") {
-                //     if (station == 396 || station == 130 || station == 194 || station == 283 || station == 145 || station == 115 || station == 75 || station == 118 || station == 178 || station == 57 || station == 107 || station == 139 || station == 154 || station == 347 || station == 180 || station == 371 || station == 18 || station == 221 || station == 34 || station == 102 || station == 32 || station == 408 || station == 411) {
-                //         wirelessStation[station] = model.addVar(1, 1, 1, GRB_BINARY, varName);
-                //     } else {
-                //         wirelessStation[station] = model.addVar(0, 0, 0, GRB_BINARY, varName);
-                //     }
-                // } else {
-                    wirelessStation[station] = model.addVar(0.0, 1, 0.0, GRB_BINARY, varName);
-                // }
-            }
+    for (const int& station : networkCfg.stationPhys) {
+        if (!networkCfg.chargerPhys.count(station)) {
+            string varName = "w_station_s" + to_string(station);
+            wirelessStation[station] = model.addVar(0.0, 1, 0.0, GRB_BINARY, varName);
         }
     }
 
     // dynamic wireless charging
-    if (isSupportDynamicWireless(modelType)) {
-        for (int year = 0; year < batteryLifespan; year++) {
-            vector<vector<unordered_map<int, unordered_map<int, GRBVar>>>> charge_y;
-            for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-                auto eb = schedulingCfg.EBs[ebIdx];
-                size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
-                vector<unordered_map<int, unordered_map<int, GRBVar>>> charge_yb;
-                charge_yb.reserve(numEBTrip);
-                for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                    auto tripDep = schedulingCfg.tripEBs[eb][tripIdx];
-                    size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
-                    unordered_map<int, unordered_map<int, GRBVar>> charge_ybn;
-                    for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                        int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                        int tripArr;
-                        int stationArr;
-                        int stationArrIdx;
-                        if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                            if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
-                                continue;
-                            }
-                            tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
-                            stationArrIdx = 0;
-                            stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
-                        } else {
-                            tripArr = tripDep;
-                            stationArrIdx = stationIdx + 1;
-                            stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
+    for (int year = 0; year < batteryLifespan; year++) {
+        vector<vector<unordered_map<int, unordered_map<int, GRBVar>>>> charge_y;
+        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+            auto eb = schedulingCfg.EBs[ebIdx];
+            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            vector<unordered_map<int, unordered_map<int, GRBVar>>> charge_yb;
+            charge_yb.reserve(numEBTrip);
+            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+                auto tripDep = schedulingCfg.tripEBs[eb][tripIdx];
+                size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
+                unordered_map<int, unordered_map<int, GRBVar>> charge_ybn;
+                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                    int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
+                    int tripArr;
+                    int stationArr;
+                    int stationArrIdx;
+                    if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
+                        if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
+                            continue;
                         }
-
-                        string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
-                                     "_i" + to_string(stationIdx) + "To_n" + to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
-                        charge_ybn[stationDep][stationArr] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
+                        tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
+                        stationArrIdx = 0;
+                        stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
+                    } else {
+                        tripArr = tripDep;
+                        stationArrIdx = stationIdx + 1;
+                        stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
                     }
-                    charge_yb.push_back(charge_ybn);
-                }
-                charge_y.push_back(charge_yb);
-            }
-            charge_ybnl.push_back(charge_y);
-        }
 
-        // facility
-        for (const auto& [start, endMap] : networkCfg.linkDistances) {
-            for (const auto& [end, _] : endMap) {
-                string varName = "w_link_l" + to_string(start) + "To" + to_string(end);
-                // if (modelType == "M3") {
-                //     if ((start == 396 && end == 107) || (start == 75 && end == 313) || (start == 118 && end == 139) ||
-                //         (start == 150 && end == 149) || (start == 141 && end == 142) || (start == 107 && end == 118) ||
-                //         (start == 139 && end == 154) || (start == 154 && end == 347) || (start == 347 && end == 180) || (start == 180 && end == 178)) {
-                //         wirelessLink[start][end] = model.addVar(1, 1, 1, GRB_BINARY, varName);
-                //     } else {
-                //         wirelessLink[start][end] = model.addVar(0, 0, 0, GRB_BINARY, varName);
-                //     }
-                // } else if (modelType == "M4") {
-                //     if ((start == 75 && end == 313) || (start == 139 && end == 154) || (start == 154 && end == 347)) {
-                //         wirelessLink[start][end] = model.addVar(1, 1, 1, GRB_BINARY, varName);
-                //     } else {
-                //         wirelessLink[start][end] = model.addVar(0, 0, 0, GRB_BINARY, varName);
-                //     }
-                // } else {
-                    wirelessLink[start][end] = model.addVar(0.0, 1, 0.0, GRB_BINARY, varName);
-                // }
+                    string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
+                                 "_i" + to_string(stationIdx) + "To_n" + to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
+                    charge_ybn[stationDep][stationArr] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
+                }
+                charge_yb.push_back(charge_ybn);
             }
+            charge_y.push_back(charge_yb);
+        }
+        charge_ybnl.push_back(charge_y);
+    }
+
+    // dynamic wireless charging facility
+    for (const auto& [start, endMap] : networkCfg.linkDistances) {
+        for (const auto& [end, _] : endMap) {
+            string varName = "w_link_l" + to_string(start) + "To" + to_string(end);
+            wirelessLink[start][end] = model.addVar(0.0, 1, 0.0, GRB_BINARY, varName);
         }
     }
 
@@ -931,30 +839,28 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
             }
         }
 
-        if (isSupportDynamicWireless(modelType)) {
-            for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-                int eb = schedulingCfg.EBs[ebIdx];
-                size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
-                for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                    int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
-                    size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
-                    for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                        int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                        int tripArr;
-                        int stationArr;
-                        if (stationIdx == numEBTripStations - 1) {
-                            if (tripIdx == numEBTrip - 1) {
-                                continue;
-                            }
-                            tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
-                            stationArr = schedulingCfg.stationTrips[tripArr][0];
-                        } else {
-                            tripArr = tripDep;
-                            stationArr = schedulingCfg.stationTrips[tripArr][stationIdx + 1];
+        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+            int eb = schedulingCfg.EBs[ebIdx];
+            size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
+            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+                int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
+                size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
+                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                    int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
+                    int tripArr;
+                    int stationArr;
+                    if (stationIdx == numEBTripStations - 1) {
+                        if (tripIdx == numEBTrip - 1) {
+                            continue;
                         }
-
-                        sum_day += charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr];
+                        tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
+                        stationArr = schedulingCfg.stationTrips[tripArr][0];
+                    } else {
+                        tripArr = tripDep;
+                        stationArr = schedulingCfg.stationTrips[tripArr][stationIdx + 1];
                     }
+
+                    sum_day += charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr];
                 }
             }
         }
@@ -994,27 +900,23 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
         obj += coeff * batteryChoice[i];
     }
 
-    if (isSupportStaticWireless(modelType)) {
-        GRBLinExpr sum_station_charger = 0;
-        for (const auto& [_, wirelessStationVar] : wirelessStation) {
-            sum_station_charger += wirelessStationVar;
-        }
-        obj += (60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[1] + chargerCfg.priceOfUnitCharger[1]) * sum_station_charger * 2;
+    GRBLinExpr sum_station_charger = 0;
+    for (const auto& [_, wirelessStationVar] : wirelessStation) {
+        sum_station_charger += wirelessStationVar;
     }
+    obj += (60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[1] + chargerCfg.priceOfUnitCharger[1]) * sum_station_charger * 2;
 
     // cost of constructing dynamic wireless charging facility
-    if (isSupportDynamicWireless(modelType)) {
-        GRBLinExpr sum_link_charger = 0;
-        GRBLinExpr sum_link_charger_cnt = 0;
-        for (const auto& [start, endMap] : networkCfg.linkDistances) {
-            for (const auto& [end, dist] : endMap) {
-                sum_link_charger += wirelessLink[start][end] * dist;
-                sum_link_charger_cnt += wirelessLink[start][end];
-            }
+    GRBLinExpr sum_link_charger = 0;
+    GRBLinExpr sum_link_charger_cnt = 0;
+    for (const auto& [start, endMap] : networkCfg.linkDistances) {
+        for (const auto& [end, dist] : endMap) {
+            sum_link_charger += wirelessLink[start][end] * dist;
+            sum_link_charger_cnt += wirelessLink[start][end];
         }
-        obj += chargerCfg.priceOfUnitCharger[2] * sum_link_charger;
-        obj += 60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[2] * sum_link_charger_cnt;
     }
+    obj += chargerCfg.priceOfUnitCharger[2] * sum_link_charger;
+    obj += 60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[2] * sum_link_charger_cnt;
 
     model.setObjective(obj, GRB_MINIMIZE);
 
@@ -1106,61 +1008,57 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
         }
 
     // c_bns in static wireless charging stations
-        if (isSupportStaticWireless(modelType)) {
-            for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-                int eb = schedulingCfg.EBs[ebIdx];
-                for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
-                    int trip = schedulingCfg.tripEBs[eb][tripIdx];
-                    for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
-                        int station = schedulingCfg.stationTrips[trip][stationIdx];
-                        if (networkCfg.chargerPhys.count(station)) {
-                            continue;
-                        }
-                        string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
-                        GRBVar charge = charge_ybns[year][ebIdx][tripIdx][station];
-                        GRBVar isBuilt = wirelessStation[station];
-                        int stayTime = schedulingCfg.stationDepTimes[trip][stationIdx] - schedulingCfg.stationArrTimes[trip][stationIdx];
-                        model.addConstr(charge <= chargerCfg.chargeRate[1] * isBuilt * stayTime,
-                                        "constrChargeWirelessStation" + sub);
+        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+            int eb = schedulingCfg.EBs[ebIdx];
+            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
+                int trip = schedulingCfg.tripEBs[eb][tripIdx];
+                for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
+                    int station = schedulingCfg.stationTrips[trip][stationIdx];
+                    if (networkCfg.chargerPhys.count(station)) {
+                        continue;
                     }
+                    string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
+                    GRBVar charge = charge_ybns[year][ebIdx][tripIdx][station];
+                    GRBVar isBuilt = wirelessStation[station];
+                    int stayTime = schedulingCfg.stationDepTimes[trip][stationIdx] - schedulingCfg.stationArrTimes[trip][stationIdx];
+                    model.addConstr(charge <= chargerCfg.chargeRate[1] * isBuilt * stayTime,
+                                    "constrChargeWirelessStation" + sub);
                 }
             }
         }
 
     // c_bnl in dynamic wireless charging links
-        if (isSupportDynamicWireless(modelType)) {
-            for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-                int eb = schedulingCfg.EBs[ebIdx];
-                for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
-                    int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
-                    for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[tripDep].size(); stationIdx++) {
-                        int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                        int tripArrIdx;
-                        int stationArrIdx;
-                        if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                            if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
-                                continue;
-                            }
-                            tripArrIdx = tripIdx + 1;
-                            stationArrIdx = 0;
-                        } else {
-                            tripArrIdx = tripIdx;
-                            stationArrIdx = stationIdx + 1;
+        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+            int eb = schedulingCfg.EBs[ebIdx];
+            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
+                int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
+                for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[tripDep].size(); stationIdx++) {
+                    int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
+                    int tripArrIdx;
+                    int stationArrIdx;
+                    if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
+                        if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
+                            continue;
                         }
-
-                        int tripArr = schedulingCfg.tripEBs[eb][tripArrIdx];
-                        int stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
-
-                        string subCharge = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
-                                           "_i" + to_string(stationIdx) + "To_n" + to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
-                        GRBVar linkCharge = charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr];
-                        GRBVar isBuilt = wirelessLink[stationDep][stationArr];
-                        int timeDep = schedulingCfg.stationDepTimes[tripDep][stationIdx];
-                        int timeArr = schedulingCfg.stationArrTimes[tripArr][stationArrIdx];
-                        int travel_time = timeArr - timeDep;
-                        model.addConstr(linkCharge <= chargerCfg.chargeRate[2] * travel_time * isBuilt,
-                            "constrChargeWirelessLink" + subCharge);
+                        tripArrIdx = tripIdx + 1;
+                        stationArrIdx = 0;
+                    } else {
+                        tripArrIdx = tripIdx;
+                        stationArrIdx = stationIdx + 1;
                     }
+
+                    int tripArr = schedulingCfg.tripEBs[eb][tripArrIdx];
+                    int stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
+
+                    string subCharge = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
+                                       "_i" + to_string(stationIdx) + "To_n" + to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
+                    GRBVar linkCharge = charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr];
+                    GRBVar isBuilt = wirelessLink[stationDep][stationArr];
+                    int timeDep = schedulingCfg.stationDepTimes[tripDep][stationIdx];
+                    int timeArr = schedulingCfg.stationArrTimes[tripArr][stationArrIdx];
+                    int travel_time = timeArr - timeDep;
+                    model.addConstr(linkCharge <= chargerCfg.chargeRate[2] * travel_time * isBuilt,
+                        "constrChargeWirelessLink" + subCharge);
                 }
             }
         }
@@ -1205,12 +1103,8 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
                         GRBVar charge = charge_ybns[year][ebIdx][tripIdx][station];
                         model.addConstr(depE == arrE + charge * chargerCfg.chargeEfficiency[0], "e_InnerStation" + sub);
                     } else {
-                        if (isSupportStaticWireless(modelType)) {
-                            GRBVar charge = charge_ybns[year][ebIdx][tripIdx][station];
-                            model.addConstr(depE == arrE + charge * chargerCfg.chargeEfficiency[1], "e_InnerStation" + sub);
-                        } else {
-                            model.addConstr(depE == arrE, "e_InnerStation" + sub);
-                        }
+                        GRBVar charge = charge_ybns[year][ebIdx][tripIdx][station];
+                        model.addConstr(depE == arrE + charge * chargerCfg.chargeEfficiency[1], "e_InnerStation" + sub);
                     }
                 }
             }
@@ -1243,13 +1137,9 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
                     GRBVar arrE = energyArr_ybns[year][ebIdx][tripArrIdx][stationArrIdx];
                     double dist = networkCfg.linkDistances[stationDep][stationArr];
                     GRBLinExpr consumption = dist * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-                    if (isSupportDynamicWireless(modelType)) {
-                        GRBVar linkCharge = charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr];
-                        model.addConstr(arrE == depE - consumption + linkCharge * chargerCfg.chargeEfficiency[2],
-                                        "e_InterStation" + subDep);
-                    } else {
-                        model.addConstr(arrE == depE - consumption, "e_InterStation" + subDep);
-                    }
+                    GRBVar linkCharge = charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr];
+                    model.addConstr(arrE == depE - consumption + linkCharge * chargerCfg.chargeEfficiency[2],
+                                    "e_InterStation" + subDep);
                 }
             }
         }
@@ -1275,9 +1165,6 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
     if (options.buildProblemDataOnly) {
         return options.externalModel != nullptr;
     }
-    //         cout << "检测到已有解，作为起点继续求解: " << solutionPath.string() << endl;
-    //         cout << "读取已有解失败，改为重新求解: " << e.getMessage() << endl;
-
     auto timeRecordFinishModelInit = chrono::high_resolution_clock::now();
     model.optimize();
     auto timeRecordFinishSolve = chrono::high_resolution_clock::now();
@@ -1376,11 +1263,9 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
 
                             double depEVal = energyDep_ybns[year][ebIdx][tripIdx][stationIdx].get(GRB_DoubleAttr_X);
                             double arrEVal = energyArr_ybns[year][ebIdx][tripArrIdx][stationArrIdx].get(GRB_DoubleAttr_X);
-                            double linkCharge = 0.0;
-                            if (isSupportDynamicWireless(modelType)) {
-                                linkCharge = charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr].get(GRB_DoubleAttr_X) * chargerCfg.chargeEfficiency[2];
-                            }
-                            double dischargeEnergy = depEVal - arrEVal + linkCharge; // 等价于路段消耗
+                            double linkCharge = charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr].get(GRB_DoubleAttr_X) *
+                                chargerCfg.chargeEfficiency[2];
+                            double dischargeEnergy = depEVal - arrEVal + linkCharge; // link consumption
                             double socAmount = dischargeEnergy / batteryCapacityYear;
                             double depSoc = depEVal / batteryCapacityYear;
                             double arrSoc = arrEVal / batteryCapacityYear;
@@ -1417,79 +1302,6 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
             return true;
         }
         cout << "\n================ success ================" << endl;
-        // for (int year = 0; year < batteryLifespan; year++) {
-        //     cout << "\n  第 " << year << " 年数据：" << endl;
-        //     cout << "\n================ 每辆车行程详情 ================" << endl;
-        //     for (int eb : schedulingCfg.EBs) {
-        //         cout << "\n【车辆 EB" << eb << "】" << endl;
-        //         cout << "包含行程数量：" << schedulingCfg.tripEBs[eb].size() << endl;
-
-        //         for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[eb].size(); tripIdx++) {
-        //             int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
-        //             cout << "  行程 " << tripDep << "：" << endl;
-        //             cout << "    " << left << setw(16) << "station"
-        //                            << setw(8) << "arrT" << setw(8) << "depT"
-        //                            << setw(8) << "arrE" << setw(8) << "depE"
-        //                            << setw(16) << "stationCharge" << setw(16) << "linkCharge"
-        //                            << setw(20) << "stationConsumption" << setw(20) << "linkConsumption" << endl;
-
-        //             for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[tripDep].size(); stationIdx++) {
-        //                 int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-        //                 int timeArr = schedulingCfg.stationArrTimes[tripDep][stationIdx];
-        //                 int timeDep = schedulingCfg.stationDepTimes[tripDep][stationIdx];
-        //                 GRBVar arrE = energyArr_ybns[year][eb][tripIdx][stationIdx];
-        //                 GRBVar depE = energyDep_ybns[year][eb][tripIdx][stationIdx];
-        //                 double stationConsumption = 0.0;
-        //                 double linkConsumption = 0.0;
-        //                 double chargeStation = 0.0;
-        //                 double chargeLink = 0.0;
-        //                 bool flag = true;
-
-        //                 if ((networkCfg.chargerPhys.count(stationDep))) {
-        //                     stationConsumption = charge_ybns[year][eb][tripIdx][stationDep].get(GRB_DoubleAttr_X);
-        //                     chargeStation = stationConsumption * chargerCfg.chargeEfficiency[0];
-        //                 } else if (isSupportStaticWireless(modelType)) {
-        //                     stationConsumption = charge_ybns[year][eb][tripIdx][stationDep].get(GRB_DoubleAttr_X);
-        //                     chargeStation = stationConsumption * chargerCfg.chargeEfficiency[1];
-        //                 }
-
-        //                 if (isSupportDynamicWireless(modelType)) {
-        //                     int tripArr;
-        //                     int stationArr;
-        //                     if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-        //                         if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
-        //                             flag = false;
-        //                         } else {
-        //                         tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
-        //                         stationArr = schedulingCfg.stationTrips[tripArr][0];
-        //                         }
-        //                     } else {
-        //                         tripArr = tripDep; stationArr = schedulingCfg.stationTrips[tripArr][stationIdx + 1];
-        //                     }
-        //                     if (flag) {
-        //                         string subLink = "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
-        //                                          "To_n" + to_string(tripArr) + "_s" + to_string(stationArr);
-        //                         linkConsumption = wirelessLink[stationDep][stationArr].get(GRB_DoubleAttr_X);
-        //                         chargeLink = linkConsumption * chargerCfg.chargeEfficiency[2];
-        //                     }
-        //                 }
-
-        //                 string chargeInfo = networkCfg.chargerPhys.count(stationDep) ? "fast" : "wireless";
-        //                 cout << "    " << left << setw(16) << to_string(stationDep) + "|" + chargeInfo
-        //                                 << setw(8) << timeArr << setw(8) << timeDep
-        //                                 << setw(10) << fixed << setprecision(4) << arrE.get(GRB_DoubleAttr_X)
-        //                                 << setw(10) << fixed << setprecision(4) << depE.get(GRB_DoubleAttr_X)
-        //                                 << setw(18) << fixed << setprecision(4) << chargeStation
-        //                                 << setw(18) << fixed << setprecision(4) << chargeLink
-        //                                 << setw(20) << fixed << setprecision(4) << stationConsumption
-        //                                 << setw(20) << fixed << setprecision(4) << linkConsumption << endl;
-        //             }
-        //         }
-        //         cout << "夜间充电：" << fixed << setprecision(4) <<
-        //                 chargeNight_yb[year][eb].get(GRB_DoubleAttr_X) << endl;
-        //     }
-        // }
-
         double batteryCapacity = E.get(GRB_DoubleAttr_X);
         double batteryPricePerUnitVal = numEB * operationCfg.priceOfUnitBat * batteryCapacity;
 
@@ -1525,24 +1337,22 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
                         int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
                         if (networkCfg.chargerPhys.count(stationDep)) {
                             energyConsumptionYearly[0] += charge_ybns[year][ebIdx][tripIdx][stationDep].get(GRB_DoubleAttr_X);
-                        } else if (isSupportStaticWireless(modelType)) {
+                        } else {
                             energyConsumptionYearly[1] += charge_ybns[year][ebIdx][tripIdx][stationDep].get(GRB_DoubleAttr_X);
                         }
-                        if (isSupportDynamicWireless(modelType)) {
-                            int tripArr;
-                            int stationArr;
-                            if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                                if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
-                                    continue;
-                                }
-                                tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
-                                stationArr = schedulingCfg.stationTrips[tripArr][0];
-                            } else {
-                                tripArr = tripDep;
-                                stationArr = schedulingCfg.stationTrips[tripArr][stationIdx + 1];
+                        int tripArr;
+                        int stationArr;
+                        if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
+                            if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
+                                continue;
                             }
-                            energyConsumptionYearly[2] += charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr].get(GRB_DoubleAttr_X);
+                            tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
+                            stationArr = schedulingCfg.stationTrips[tripArr][0];
+                        } else {
+                            tripArr = tripDep;
+                            stationArr = schedulingCfg.stationTrips[tripArr][stationIdx + 1];
                         }
+                        energyConsumptionYearly[2] += charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr].get(GRB_DoubleAttr_X);
                     }
                 }
                 overNightChargeYearly += chargeNight_yb[year][eb].get(GRB_DoubleAttr_X);
@@ -1569,7 +1379,7 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
         double totalEnergy = energyConsumption[0] + energyConsumption[1] + energyConsumption[2] + overNightCharge;
         double totalEnergyCost = (energyConsumption[0] + energyConsumption[1] + energyConsumption[2]) * operationCfg.priceOfPowerDay + overNightCharge * operationCfg.priceOfPowerNight;
 
-        cout << "model: " << modelType << ", planningPeriod:" << planningYears << "years, objective function" << model.get(GRB_DoubleAttr_ObjVal) << endl;
+        cout << "planningPeriod:" << planningYears << "years, objective function" << model.get(GRB_DoubleAttr_ObjVal) << endl;
         cout << "EBsNum: " << numEB << ", tripsNum: " << numTrips << ", stationsNum: " << numStations << endl;
 
         std::cout << "batteryLife: " << batteryLifespan << std::endl;
@@ -1584,36 +1394,28 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
         cout << "OvernightCharge: " << overNightCharge << ", Total Energy Consumption: " << totalEnergy << ", Total Energy Cost: " << totalEnergyCost << endl;
 
         double totalWirelessStations = 0;
-        if (isSupportStaticWireless(modelType)) {
-            cout << "\n================ Usage of Wireless Charging Stations ================" << endl;
-            for (const int& station : networkCfg.stationPhys) {
-                if (!networkCfg.chargerPhys.count(station) && (wirelessStation[station].get(GRB_DoubleAttr_X) > 0.5)) {
-                    cout << station << "   ";
-                    totalWirelessStations += chargerCfg.priceOfUnitCharger[1] * 2;
-                    totalWirelessStations += 60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[1] * 2;
-                }
+        cout << "\n================ Usage of Wireless Charging Stations ================" << endl;
+        for (const int& station : networkCfg.stationPhys) {
+            if (!networkCfg.chargerPhys.count(station) && (wirelessStation[station].get(GRB_DoubleAttr_X) > 0.5)) {
+                cout << station << "   ";
+                totalWirelessStations += chargerCfg.priceOfUnitCharger[1] * 2;
+                totalWirelessStations += 60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[1] * 2;
             }
-            cout << "\n Total Construction Cost of Wireless Stations: " << totalWirelessStations << endl;
-        } else {
-            cout << "\n no wireless charging station" << endl;
         }
+        cout << "\n Total Construction Cost of Wireless Stations: " << totalWirelessStations << endl;
 
         double totalWirelessLinks = 0;
-        if (isSupportDynamicWireless(modelType)) {
-            cout << "\n================ Usage of Wireless Charging Links ================" << endl;
-            for (const auto& [start, endMap] : networkCfg.linkDistances) {
-                for (const auto& [end, _] : endMap) {
-                    if (wirelessLink[start][end].get(GRB_DoubleAttr_X) > 0.5) {
-                        cout << to_string(start) + " To " + to_string(end) << " : " << setw(4) << networkCfg.linkDistances[start][end] << " km   " << endl;
-                        totalWirelessLinks += networkCfg.linkDistances[start][end] * chargerCfg.priceOfUnitCharger[2];
-                        totalWirelessLinks += 60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[2];
-                    }
+        cout << "\n================ Usage of Wireless Charging Links ================" << endl;
+        for (const auto& [start, endMap] : networkCfg.linkDistances) {
+            for (const auto& [end, _] : endMap) {
+                if (wirelessLink[start][end].get(GRB_DoubleAttr_X) > 0.5) {
+                    cout << to_string(start) + " To " + to_string(end) << " : " << setw(4) << networkCfg.linkDistances[start][end] << " km   " << endl;
+                    totalWirelessLinks += networkCfg.linkDistances[start][end] * chargerCfg.priceOfUnitCharger[2];
+                    totalWirelessLinks += 60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[2];
                 }
             }
-            cout << "\n Total Construction Cost of Wireless Links: " << totalWirelessLinks << endl;
-        } else {
-            cout << "\n no wireless charging link" << endl;
         }
+        cout << "\n Total Construction Cost of Wireless Links: " << totalWirelessLinks << endl;
         double totalConstructionCost = totalWirelessStations + totalWirelessLinks;
         cout << "\n cost summary: \n construction: " << totalConstructionCost << ", battery: " << totalBattery
                                                      << ", energy: " << totalEnergyCost
@@ -1629,7 +1431,6 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
 
         ofstream summaryFile(summaryPath);
         if (summaryFile.is_open()) {
-            summaryFile << "model: " << modelType << "\n";
             summaryFile << "objective: " << model.get(GRB_DoubleAttr_ObjVal) << "\n";
             summaryFile << "batteryCapacity: " << batteryCapacity << "\n";
             int degYears = static_cast<int>(min(operationCfg.batteryLifespan, static_cast<int>(operationCfg.batteryDegradation.size())));
@@ -1650,17 +1451,17 @@ static bool SolveWithGurobiWirelessChargingStratgiesInternal(const string& model
             summaryFile << "initModelMs: " << chrono::duration_cast<chrono::milliseconds>(timeRecordFinishModelInit - timeRecordFinishDataInit).count() << "\n";
             summaryFile << "solveMs: " << chrono::duration_cast<chrono::milliseconds>(timeRecordFinishSolve - timeRecordFinishModelInit).count() << "\n";
         } else {
-            cout << "结果摘要文件写入失败: " << summaryPath.string() << endl;
+            cout << "Failed to write summary file: " << summaryPath.string() << endl;
         }
 
         return true;
     } else if (model.get(GRB_IntAttr_Status) == GRB_INFEASIBLE) {
-        cout << "求解失败，模型不可行，获取ilp中" << endl;
+        cout << "Solve failed: model infeasible, writing IIS." << endl;
         model.computeIIS();
         model.write("model_iis.ilp");
         return false;
     } else{
-        cout << "求解失败，状态码：" << solveStatus << endl;
+        cout << "Solve failed, status: " << solveStatus << endl;
         return false;
     }
 }
@@ -1671,18 +1472,13 @@ WirelessChargingDataInitializationStrategy_Solver::WirelessChargingDataInitializ
 
 Status WirelessChargingDataInitializationStrategy_Solver::DataInit(GRBModel& model)
 {
-    std::string normalizedModelType =
-        LoadModelTypeFromConfig(ResolveDataFolderPath(dataFolder) / "config.txt").value();
-
     std::cout << "Loaded wireless charging data from file." << std::endl;
-    std::cout << "modelType=" << normalizedModelType << std::endl;
 
     WirelessGurobiOptions options;
-    options.mipGap = 0.02;
     options.timeLimit = 18000.0;
     options.buildProblemDataOnly = true;
     options.externalModel = &model;
-    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(normalizedModelType, dataFolder, options);
+    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(dataFolder, options);
     return built ? OK : ERROR;
 }
 
@@ -1705,7 +1501,6 @@ void WirelessChargingSubProblemStrategy_Benders::InitSubProblem(
     GRBModel& subModel,
     BendersSubProblemContext& context)
 {
-    const auto& modelType = problemData.getData<std::string>("wireless_model_type");
     const auto& dataFolder = problemData.getData<std::string>("wireless_data_folder");
     const auto& masterVars = problemData.getData<std::vector<ProblemDataVar>>("masterVars");
 
@@ -1714,10 +1509,11 @@ void WirelessChargingSubProblemStrategy_Benders::InitSubProblem(
     masterVarRefs.reserve(masterVars.size());
 
     WirelessGurobiOptions options;
+    options.mipGap = 0.0;
     options.timeLimit = 18000.0;
     options.buildProblemDataOnly = true;
     options.externalModel = &subModel;
-    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(modelType, dataFolder, options);
+    bool built = SolveWithGurobiWirelessChargingStratgiesInternal(dataFolder, options);
     if (!built) {
         throw std::runtime_error("Failed to build wireless charging sub-problem.");
     }

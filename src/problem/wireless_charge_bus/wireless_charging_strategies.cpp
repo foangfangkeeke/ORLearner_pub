@@ -1,14 +1,10 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <iostream>
-#include <iomanip>
-#include <chrono>
-#include <memory>
 #include <filesystem>
-#include <cctype>
-#include <math.h>
+#include <cmath>
 #include <fstream>
-#include <sstream>
+#include <memory>
 #include <optional>
 #include <algorithm>
 #include <stdexcept>
@@ -24,11 +20,9 @@ namespace fs = std::filesystem;
 #define OFFSET_NETWORK_CFG (OFFSET_CHARGING_CFG + 4)
 #define OFFSET_SCHEDULING_CFG (OFFSET_NETWORK_CFG + 2)
 #define OFFSET_CHARGER_CFG(numEB) (OFFSET_SCHEDULING_CFG + 3 + (numEB))
-#define GAMMA (0)
 
 using linkTimeType = unordered_map<int, unordered_map<int, double>>;
 using stationTimeType = vector<vector<int>>;
-using stationType = vector<vector<int>>;
 using stringCfgType = vector<vector<string>>;
 
 namespace {
@@ -165,7 +159,6 @@ struct OperationCfg {
     double g;
     int timeMin;
     int timeMax;
-    int timeInterval;
     int batteryLifespan;
     vector<double> batteryDegradation;
     double recyclingPriceRate;
@@ -267,7 +260,7 @@ private:
             schedulingCfg.stationTrips = *tmpTripStations;
         }
 
-        auto tmpMiscCfg = LoadStringTable(Resolve("miscCfg.txt")); // TODO:名称过长
+        auto tmpMiscCfg = LoadStringTable(Resolve("miscCfg.txt"));
         if (tmpMiscCfg.has_value()) {
             vector<string> operationCfgDouble = tmpMiscCfg->at(OFFSET_OPERATION_CFG);
             vector<string> operationCfgInt = tmpMiscCfg->at(OFFSET_OPERATION_CFG + 1);
@@ -283,7 +276,6 @@ private:
             operationCfg.capacityMax = stod(operationCfgDouble[6]);
             operationCfg.timeMin = stoi(operationCfgInt[0]);
             operationCfg.timeMax = stoi(operationCfgInt[1]);
-            operationCfg.timeInterval = stoi(operationCfgInt[2]);
             operationCfg.curbWeight = stod(operationCfgBus[0]);
             operationCfg.weightPerEnergy = stod(operationCfgBus[1]);
             operationCfg.mu = stod(operationCfgBus[2]);
@@ -527,54 +519,25 @@ static Status SolveWirelessRelaxedForFarkas(GRBModel& relaxedModel)
 }
 
 struct WirelessGurobiOptions {
-    bool allowOutputSolution = false;
-    bool outputSolverLog = false;
     double mipGap = -1.0;
     double timeLimit = 18000.0;
-    bool buildProblemDataOnly = false;
-    GRBModel* externalModel = nullptr;
     bool includeFirstStageObjective = true;
     bool configureSolverParameters = true;
 };
 
-static bool BuildWirelessChargingModelInternal(const string& dataFolder, const WirelessGurobiOptions& options) {
+static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBModel& model,
+    const WirelessGurobiOptions& options)
+{
+    ModelData data(dataFolder);
 
-    auto timeRecordStart = chrono::high_resolution_clock::now();
-    unique_ptr<ModelData> data = make_unique<ModelData>(dataFolder);
-    auto timeRecordFinishDataInit = chrono::high_resolution_clock::now();
-
-    OperationCfg operationCfg = data->GetOperationCfg();
-    ChargerCfg chargerCfg = data->GetChargerCfg();
-    SchedulingCfg schedulingCfg = data->GetSchedulingCfg();
-    NetworkCfg networkCfg = data->GetNetworkCfg();
-    fs::path dataFolderPath = data->GetDataFolderPath();
-    fs::path resultDir = dataFolderPath;
-    if (!options.buildProblemDataOnly) {
-        fs::create_directories(resultDir);
-    }
-    fs::path solutionPath = resultDir / "solution.sol";
-    fs::path summaryPath = resultDir / "summary.txt";
-
+    OperationCfg operationCfg = data.GetOperationCfg();
+    ChargerCfg chargerCfg = data.GetChargerCfg();
+    SchedulingCfg schedulingCfg = data.GetSchedulingCfg();
+    NetworkCfg networkCfg = data.GetNetworkCfg();
     int planningYears = operationCfg.planningYears;
     int batteryLifespan = operationCfg.batteryLifespan;
     int batteryRounds = planningYears / batteryLifespan ;
     int residualLife = planningYears - batteryRounds * batteryLifespan;
-
-    fs::path logPath = resultDir / "gurobi_log.txt";
-
-    unique_ptr<GRBEnv> ownedEnv;
-    unique_ptr<GRBModel> ownedModel;
-    GRBModel* modelPtr = options.externalModel;
-    if (modelPtr == nullptr) {
-        ownedEnv = make_unique<GRBEnv>(true);
-        ownedEnv->set("LogFile", logPath.string());
-        ownedEnv->set(GRB_IntParam_OutputFlag, options.outputSolverLog ? 1 : 0);
-        ownedEnv->start();
-        ownedModel = make_unique<GRBModel>(*ownedEnv);
-        modelPtr = ownedModel.get();
-    }
-
-    GRBModel& model = *modelPtr;
 
     if (options.configureSolverParameters) {
         if (options.mipGap >= 0.0) {
@@ -582,60 +545,13 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, const W
         }
         model.set(GRB_DoubleParam_TimeLimit, options.timeLimit);
         model.set(GRB_IntParam_Presolve, 2);
-        model.set(GRB_IntParam_MIPFocus, 1); // 优先改进可行解
-        model.set(GRB_DoubleParam_Heuristics, 0.5); // 提高启发式强度
-        // model.set(GRB_IntParam_PumpPasses, 50); // 强化可行性泵
-        // model.set(GRB_IntParam_RINS, 50); // 强化RINS启发
+        model.set(GRB_IntParam_MIPFocus, 1);
+        model.set(GRB_DoubleParam_Heuristics, 0.5);
         model.set(GRB_IntParam_Threads, 14);
         model.set(GRB_IntParam_Method, 1);
     }
     // decision variable
-    GRBVar E = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "E"); // 初始电池容量
-
-    // 预先计算每种备选容量下，一整天路径的总能耗及对应SoC下降，便于后续分析/约束扩展
-    auto calcTotalEnergyForCapacity = [&](double cap) {
-        double total = 0.0;
-        auto segmentEnergy = [&](double dist) {
-            return dist * (operationCfg.curbWeight + cap * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-        };
-
-        for (int ebIdx = 0; ebIdx < schedulingCfg.numEB; ++ebIdx) {
-            int eb = schedulingCfg.EBs[ebIdx];
-
-            // depot -> first station
-            total += segmentEnergy(networkCfg.startDistanceEBs[eb]);
-
-            // station-to-station legs
-            for (int tripIdx = 0; tripIdx < static_cast<int>(schedulingCfg.tripEBs[eb].size()); ++tripIdx) {
-                int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
-                int numStations = static_cast<int>(schedulingCfg.stationTrips[tripDep].size());
-                for (int stationIdx = 0; stationIdx < numStations; ++stationIdx) {
-                    bool isLastStation = stationIdx == numStations - 1;
-                    bool isLastTrip = tripIdx == static_cast<int>(schedulingCfg.tripEBs[eb].size()) - 1;
-                    if (isLastStation && isLastTrip) {
-                        break; // handled by depot leg
-                    }
-
-                    int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                    int tripArr = isLastStation ? schedulingCfg.tripEBs[eb][tripIdx + 1] : tripDep;
-                    int stationArr = isLastStation ? schedulingCfg.stationTrips[tripArr][0]
-                                                   : schedulingCfg.stationTrips[tripArr][stationIdx + 1];
-
-                    auto distIt = networkCfg.linkDistances.find(stationDep);
-                    if (distIt != networkCfg.linkDistances.end()) {
-                        auto innerIt = distIt->second.find(stationArr);
-                        if (innerIt != distIt->second.end()) {
-                            total += segmentEnergy(innerIt->second);
-                        }
-                    }
-                }
-            }
-
-            // last station -> depot
-            total += segmentEnergy(networkCfg.endDistanceEBs[eb]);
-        }
-        return total;
-    };
+    GRBVar E = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "E");
 
     vector<double> batteryOptions;
     for (double cap = operationCfg.capacityMin; cap <= operationCfg.capacityMax; cap += 10.0) {
@@ -652,8 +568,8 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, const W
         batteryChoice.push_back(model.addVar(0.0, 1.0, 0.0, GRB_BINARY, varName));
     }
     vector<vector<GRBVar>> chargeNight_yb; // [year][eb]
-    unordered_map<int, GRBVar> wirelessStation; // M2/M4: construction of facility (一次性建设)
-    unordered_map<int, unordered_map<int, GRBVar>> wirelessLink; // M3/M4: construction of facility (一次性建设)
+    unordered_map<int, GRBVar> wirelessStation;
+    unordered_map<int, unordered_map<int, GRBVar>> wirelessLink;
     vector<vector<vector<unordered_map<int, GRBVar>>>> charge_ybns; // [year][eb][trip][station]
     vector<vector<vector<unordered_map<int, unordered_map<int, GRBVar>>>>> charge_ybnl; // M3/M4: [year][eb][trip][start][end]
     vector<vector<vector<vector<GRBVar>>>> energyDep_ybns; // [year][eb][trip][station]
@@ -661,12 +577,6 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, const W
     vector<unordered_map<int, unordered_map<int, unordered_map<int, unordered_map<int, GRBVar>>>>> x_ybns_t; // [year][eb][trip][station][time]
 
     size_t numEB = schedulingCfg.numEB;
-    size_t numStations = networkCfg.stationPhys.size();
-    size_t numChargeStations = networkCfg.chargerPhys.size();
-    size_t numLink = 0;
-    for (const auto& destDist : networkCfg.linkDistances) {
-        numLink += destDist.second.size();
-    }
 
     chargeNight_yb.reserve(batteryLifespan);
     charge_ybns.reserve(batteryLifespan);
@@ -1175,319 +1085,16 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, const W
     }
 
     model.update();
-    if (options.buildProblemDataOnly) {
-        return options.externalModel != nullptr;
-    }
-    auto timeRecordFinishModelInit = chrono::high_resolution_clock::now();
-    model.optimize();
-    auto timeRecordFinishSolve = chrono::high_resolution_clock::now();
-
-    int solveStatus = model.get(GRB_IntAttr_Status);
-    if (solveStatus == GRB_OPTIMAL || (solveStatus == GRB_TIME_LIMIT && model.get(GRB_IntAttr_SolCount)>0)) {
-        model.write(solutionPath.string());
-
-        fs::path socPath = resultDir / "soc_trace.txt";
-        ofstream socFile(socPath);
-        if (socFile.is_open()) {
-            for (int year = 0; year < batteryLifespan; year++) {
-                double yearlyBatteryCapacityFactor = getSoH(year, operationCfg.batteryDegradation);
-                double batteryCapacityYear = E.get(GRB_DoubleAttr_X) * yearlyBatteryCapacityFactor; // 年度容量上限
-                socFile << "year " << year << ", batteryCapacity " << batteryCapacityYear << "\n";
-
-                for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-                    int eb = schedulingCfg.EBs[ebIdx];
-                    socFile << "eb " << eb << ": " << operationCfg.socMax << ", ";
-
-                    size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
-                    for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                        int trip = schedulingCfg.tripEBs[eb][tripIdx];
-                        size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
-                        for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                            int station = schedulingCfg.stationTrips[trip][stationIdx];
-                            double arrSoc = energyArr_ybns[year][ebIdx][tripIdx][stationIdx].get(GRB_DoubleAttr_X) / batteryCapacityYear;
-                            double depSoc = energyDep_ybns[year][ebIdx][tripIdx][stationIdx].get(GRB_DoubleAttr_X) / batteryCapacityYear;
-                            socFile << arrSoc << ", ";
-                            socFile << depSoc << ", ";
-                        }
-                    }
-
-                    int endTripIdx = schedulingCfg.tripEBs[eb].size() - 1;
-                    int endTrip = schedulingCfg.tripEBs[eb][endTripIdx];
-                    int endStationIdx = schedulingCfg.stationTrips[endTrip].size() - 1;
-                    double distEnd = networkCfg.endDistanceEBs[eb];
-                    GRBLinExpr consumptionEnd = distEnd * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-                    double depotArrE = energyDep_ybns[year][ebIdx][endTripIdx][endStationIdx].get(GRB_DoubleAttr_X) - consumptionEnd.getValue();
-                    double depotArrSoc = depotArrE / batteryCapacityYear;
-                    socFile << depotArrSoc << "\n";
-                }
-                socFile << "\n";
-            }
-        } else {
-            cout << "写入SoC轨迹文件失败: " << socPath.string() << endl;
-        }
-
-        fs::path dischargePath = resultDir / "discharge_events.txt";
-        ofstream dischargeFile(dischargePath);
-        if (dischargeFile.is_open()) {
-            for (int year = 0; year < batteryLifespan; year++) {
-                double yearlyBatteryCapacityFactor = getSoH(year, operationCfg.batteryDegradation);
-                double batteryCapacityYear = E.get(GRB_DoubleAttr_X) * yearlyBatteryCapacityFactor;
-                dischargeFile << "year " << year << ", batteryCapacity " << batteryCapacityYear << "\n";
-
-                for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-                    int eb = schedulingCfg.EBs[ebIdx];
-                    size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
-
-                    // depot -> first station
-                    int startTripIdx = 0;
-                    int startTrip = schedulingCfg.tripEBs[eb][startTripIdx];
-                    int startStationIdx = 0;
-                    int startStation = schedulingCfg.stationTrips[startTrip][startStationIdx];
-                    double distStart = networkCfg.startDistanceEBs[eb];
-                    GRBLinExpr consumptionStartExpr = distStart * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-                    double arrEStart = energyArr_ybns[year][ebIdx][startTripIdx][startStationIdx].get(GRB_DoubleAttr_X);
-                    double depSocStart = operationCfg.socMax; // 出发SoC限制
-                    double arrSocStart = arrEStart / batteryCapacityYear;
-                    double socAmountStart = consumptionStartExpr.getValue() / batteryCapacityYear;
-                    double socMeanStart = 0.5 * (depSocStart + arrSocStart);
-                    dischargeFile << socMeanStart << ", " << socAmountStart << "\n";
-
-                    for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                        int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
-                        size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
-                        for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                            int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                            int tripArrIdx;
-                            int stationArrIdx;
-                            if (stationIdx == numEBTripStations - 1) {
-                                if (tripIdx == numEBTrip - 1) {
-                                    // last station of last trip handled after loop
-                                    continue;
-                                }
-                                tripArrIdx = tripIdx + 1;
-                                stationArrIdx = 0;
-                            } else {
-                                tripArrIdx = tripIdx;
-                                stationArrIdx = stationIdx + 1;
-                            }
-
-                            int tripArr = schedulingCfg.tripEBs[eb][tripArrIdx];
-                            int stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
-
-                            double depEVal = energyDep_ybns[year][ebIdx][tripIdx][stationIdx].get(GRB_DoubleAttr_X);
-                            double arrEVal = energyArr_ybns[year][ebIdx][tripArrIdx][stationArrIdx].get(GRB_DoubleAttr_X);
-                            double linkCharge = charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr].get(GRB_DoubleAttr_X) *
-                                chargerCfg.chargeEfficiency[2];
-                            double dischargeEnergy = depEVal - arrEVal + linkCharge; // link consumption
-                            double socAmount = dischargeEnergy / batteryCapacityYear;
-                            double depSoc = depEVal / batteryCapacityYear;
-                            double arrSoc = arrEVal / batteryCapacityYear;
-                            double socMean = 0.5 * (depSoc + arrSoc);
-
-                            dischargeFile << socMean << ", " << socAmount << "\n";
-                        }
-                    }
-
-                    // end leg to depot
-                    int endTripIdx = schedulingCfg.tripEBs[eb].size() - 1;
-                    int endTrip = schedulingCfg.tripEBs[eb][endTripIdx];
-                    int endStationIdx = schedulingCfg.stationTrips[endTrip].size() - 1;
-                    int stationDep = schedulingCfg.stationTrips[endTrip][endStationIdx];
-                    double distEnd = networkCfg.endDistanceEBs[eb];
-                    GRBLinExpr consumptionEndExpr = distEnd * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-                    double depEVal = energyDep_ybns[year][ebIdx][endTripIdx][endStationIdx].get(GRB_DoubleAttr_X);
-                    double depotArrE = depEVal - consumptionEndExpr.getValue();
-                    double dischargeEnergy = consumptionEndExpr.getValue();
-                    double socAmount = dischargeEnergy / batteryCapacityYear;
-                    double depSoc = depEVal / batteryCapacityYear;
-                    double arrSoc = depotArrE / batteryCapacityYear;
-                    double socMean = 0.5 * (depSoc + arrSoc);
-                    dischargeFile << socMean << ", " << socAmount << "\n";
-                }
-                dischargeFile << "\n";
-            }
-        } else {
-            cout << "写入放电事件文件失败: " << dischargePath.string() << endl;
-        }
-
-        if (!options.allowOutputSolution) {
-            cout << "Current objective: " << model.get(GRB_DoubleAttr_ObjVal) << endl;
-            return true;
-        }
-        cout << "\n================ success ================" << endl;
-        double batteryCapacity = E.get(GRB_DoubleAttr_X);
-        double batteryPricePerUnitVal = numEB * operationCfg.priceOfUnitBat * batteryCapacity;
-
-        int fullCyclesSumm = planningYears / batteryLifespan;
-        int tailYearsSumm = planningYears % batteryLifespan;
-        double sohAtEolSumm = getSoH(batteryLifespan, operationCfg.batteryDegradation);
-        double sohTailSumm = (tailYearsSumm > 0) ? getSoH(tailYearsSumm, operationCfg.batteryDegradation) : 0.0;
-        int batteriesNeededSumm = fullCyclesSumm + (tailYearsSumm > 0 ? 1 : 0);
-        double salvageCapacitySumSumm = fullCyclesSumm * sohAtEolSumm + sohTailSumm;
-
-        double totalBattery = batteryPricePerUnitVal * batteriesNeededSumm;
-        double totalBatteryRecycling = batteryPricePerUnitVal * salvageCapacitySumSumm * operationCfg.recyclingPriceRate;
-        totalBattery -= totalBatteryRecycling; // deduct recycling salvage
-        
-
-        int numTrips = 0;
-        for (int eb : schedulingCfg.EBs) {
-            numTrips += eb;
-        }
-        double overNightCharge = 0.f;
-        double energyConsumption[] = {0.f, 0.f, 0.f};
-        double energyCharging[] = {0.f, 0.f, 0.f};
-        for (int year = 0; year < batteryLifespan; year++) {
-            double energyConsumptionYearly[] = {0.f, 0.f, 0.f};
-            double overNightChargeYearly = 0.f;
-            for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-                int eb = schedulingCfg.EBs[ebIdx];
-                size_t numEBTrip = schedulingCfg.tripEBs[eb].size();
-                for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                    int tripDep = schedulingCfg.tripEBs[eb][tripIdx];
-                    size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
-                    for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                        int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                        if (networkCfg.chargerPhys.count(stationDep)) {
-                            energyConsumptionYearly[0] += charge_ybns[year][ebIdx][tripIdx][stationDep].get(GRB_DoubleAttr_X);
-                        } else {
-                            energyConsumptionYearly[1] += charge_ybns[year][ebIdx][tripIdx][stationDep].get(GRB_DoubleAttr_X);
-                        }
-                        int tripArr;
-                        int stationArr;
-                        if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                            if (tripIdx == schedulingCfg.tripEBs[eb].size() - 1) {
-                                continue;
-                            }
-                            tripArr = schedulingCfg.tripEBs[eb][tripIdx + 1];
-                            stationArr = schedulingCfg.stationTrips[tripArr][0];
-                        } else {
-                            tripArr = tripDep;
-                            stationArr = schedulingCfg.stationTrips[tripArr][stationIdx + 1];
-                        }
-                        energyConsumptionYearly[2] += charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr].get(GRB_DoubleAttr_X);
-                    }
-                }
-                overNightChargeYearly += chargeNight_yb[year][eb].get(GRB_DoubleAttr_X);
-            }
-            if (year < residualLife) {
-                overNightCharge += overNightChargeYearly * (batteryRounds + 1);
-                energyConsumption[0] += energyConsumptionYearly[0] * (batteryRounds + 1);
-                energyConsumption[1] += energyConsumptionYearly[1] * (batteryRounds + 1);
-                energyConsumption[2] += energyConsumptionYearly[2] * (batteryRounds + 1);
-            } else {
-                overNightCharge += overNightChargeYearly * (batteryRounds);
-                energyConsumption[0] += energyConsumptionYearly[0] * (batteryRounds);
-                energyConsumption[1] += energyConsumptionYearly[1] * (batteryRounds);
-                energyConsumption[2] += energyConsumptionYearly[2] * (batteryRounds);
-            }
-        }
-        overNightCharge = overNightCharge * 365;
-        energyConsumption[0] = energyConsumption[0] * 365;
-        energyConsumption[1] = energyConsumption[1] * 365;
-        energyConsumption[2] = energyConsumption[2] * 365;
-        energyCharging[0] = energyConsumption[0] * chargerCfg.chargeEfficiency[0];
-        energyCharging[1] = energyConsumption[1] * chargerCfg.chargeEfficiency[1];
-        energyCharging[2] = energyConsumption[2] * chargerCfg.chargeEfficiency[2];
-        double totalEnergy = energyConsumption[0] + energyConsumption[1] + energyConsumption[2] + overNightCharge;
-        double totalEnergyCost = (energyConsumption[0] + energyConsumption[1] + energyConsumption[2]) * operationCfg.priceOfPowerDay + overNightCharge * operationCfg.priceOfPowerNight;
-
-        cout << "planningPeriod:" << planningYears << "years, objective function" << model.get(GRB_DoubleAttr_ObjVal) << endl;
-        cout << "EBsNum: " << numEB << ", tripsNum: " << numTrips << ", stationsNum: " << numStations << endl;
-
-        std::cout << "batteryLife: " << batteryLifespan << std::endl;
-        for (int i = 0; i < batteryLifespan; ++i) {
-            std::cout << operationCfg.batteryDegradation[i] << std::endl;
-        }
-
-        cout << "BatteryCapacity E = " << batteryCapacity << ", Total Battery Price" << totalBattery << endl;
-        cout << "ChargingEfficiency:" << chargerCfg.chargeEfficiency[0] << ", " << chargerCfg.chargeEfficiency[1] << ", " << chargerCfg.chargeEfficiency[2] << endl;
-        cout << "EnergyConsumption: " << energyConsumption[0] << ", " << energyConsumption[1] << ", " << energyConsumption[2] << endl;
-        cout << "EnergyCharging: " << energyCharging[0] << ", " << energyCharging[1] << ", " << energyCharging[2] << endl;
-        cout << "OvernightCharge: " << overNightCharge << ", Total Energy Consumption: " << totalEnergy << ", Total Energy Cost: " << totalEnergyCost << endl;
-
-        double totalWirelessStations = 0;
-        cout << "\n================ Usage of Wireless Charging Stations ================" << endl;
-        for (const int& station : networkCfg.stationPhys) {
-            if (!networkCfg.chargerPhys.count(station) && (wirelessStation[station].get(GRB_DoubleAttr_X) > 0.5)) {
-                cout << station << "   ";
-                totalWirelessStations += chargerCfg.priceOfUnitCharger[1] * 2;
-                totalWirelessStations += 60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[1] * 2;
-            }
-        }
-        cout << "\n Total Construction Cost of Wireless Stations: " << totalWirelessStations << endl;
-
-        double totalWirelessLinks = 0;
-        cout << "\n================ Usage of Wireless Charging Links ================" << endl;
-        for (const auto& [start, endMap] : networkCfg.linkDistances) {
-            for (const auto& [end, _] : endMap) {
-                if (wirelessLink[start][end].get(GRB_DoubleAttr_X) > 0.5) {
-                    cout << to_string(start) + " To " + to_string(end) << " : " << setw(4) << networkCfg.linkDistances[start][end] << " km   " << endl;
-                    totalWirelessLinks += networkCfg.linkDistances[start][end] * chargerCfg.priceOfUnitCharger[2];
-                    totalWirelessLinks += 60 * chargerCfg.priceOfInverterPerkW * chargerCfg.chargeRate[2];
-                }
-            }
-        }
-        cout << "\n Total Construction Cost of Wireless Links: " << totalWirelessLinks << endl;
-        double totalConstructionCost = totalWirelessStations + totalWirelessLinks;
-        cout << "\n cost summary: \n construction: " << totalConstructionCost << ", battery: " << totalBattery
-                                                     << ", energy: " << totalEnergyCost
-                                                     << ", total: " << (totalConstructionCost + totalEnergyCost + totalBattery) << endl;
-
-        cout << "\n================ summary of perf ================" << endl;
-        cout << "init data: " <<
-            chrono::duration_cast<chrono::milliseconds>(timeRecordFinishDataInit - timeRecordStart).count() << " ms" << endl;
-        cout << "init model: " <<
-            chrono::duration_cast<chrono::milliseconds>(timeRecordFinishModelInit - timeRecordFinishDataInit).count() << " ms" << endl;
-        cout << "solve: " <<
-            chrono::duration_cast<chrono::milliseconds>(timeRecordFinishSolve - timeRecordFinishModelInit).count() << " ms" << endl;
-
-        ofstream summaryFile(summaryPath);
-        if (summaryFile.is_open()) {
-            summaryFile << "objective: " << model.get(GRB_DoubleAttr_ObjVal) << "\n";
-            summaryFile << "batteryCapacity: " << batteryCapacity << "\n";
-            int degYears = static_cast<int>(min(operationCfg.batteryLifespan, static_cast<int>(operationCfg.batteryDegradation.size())));
-            summaryFile << "degradationRate: ";
-            for (int y = 0; y < degYears - 1; ++y) {
-                summaryFile << operationCfg.batteryDegradation[y] << ", ";
-            }
-            summaryFile << operationCfg.batteryDegradation[degYears - 1] << "\n";
-            summaryFile << "totalBatteryCost: " << totalBattery << "\n";
-            summaryFile << "energyCost: " << totalEnergyCost << "\n";
-            summaryFile << "constructionCost: " << totalConstructionCost << "\n";
-            summaryFile << "totalCost: " << (totalConstructionCost + totalEnergyCost + totalBattery) << "\n";
-            summaryFile << "overnightCharge: " << overNightCharge << "\n";
-            summaryFile << "energyConsumptionFast: " << energyConsumption[0] << "\n";
-            summaryFile << "energyConsumptionWirelessStation: " << energyConsumption[1] << "\n";
-            summaryFile << "energyConsumptionWirelessLink: " << energyConsumption[2] << "\n";
-            summaryFile << "initDataMs: " << chrono::duration_cast<chrono::milliseconds>(timeRecordFinishDataInit - timeRecordStart).count() << "\n";
-            summaryFile << "initModelMs: " << chrono::duration_cast<chrono::milliseconds>(timeRecordFinishModelInit - timeRecordFinishDataInit).count() << "\n";
-            summaryFile << "solveMs: " << chrono::duration_cast<chrono::milliseconds>(timeRecordFinishSolve - timeRecordFinishModelInit).count() << "\n";
-        } else {
-            cout << "Failed to write summary file: " << summaryPath.string() << endl;
-        }
-
-        return true;
-    } else if (model.get(GRB_IntAttr_Status) == GRB_INFEASIBLE) {
-        cout << "Solve failed: model infeasible, writing IIS." << endl;
-        model.computeIIS();
-        model.write("model_iis.ilp");
-        return false;
-    } else{
-        cout << "Solve failed, status: " << solveStatus << endl;
-        return false;
-    }
+    return true;
 }
 
 static bool BuildWirelessChargingSolverModel(const string& dataFolder, GRBModel& model)
 {
     WirelessGurobiOptions options;
     options.timeLimit = 18000.0;
-    options.buildProblemDataOnly = true;
-    options.externalModel = &model;
     options.includeFirstStageObjective = true;
     options.configureSolverParameters = true;
-    return BuildWirelessChargingModelInternal(dataFolder, options);
+    return BuildWirelessChargingModelInternal(dataFolder, model, options);
 }
 
 static bool BuildWirelessChargingLShapedSubProblem(
@@ -1501,12 +1108,10 @@ static bool BuildWirelessChargingLShapedSubProblem(
     WirelessGurobiOptions options;
     options.mipGap = 0.0;
     options.timeLimit = 18000.0;
-    options.buildProblemDataOnly = true;
-    options.externalModel = &subModel;
     options.includeFirstStageObjective = false;
     options.configureSolverParameters = false;
 
-    if (!BuildWirelessChargingModelInternal(dataFolder, options)) {
+    if (!BuildWirelessChargingModelInternal(dataFolder, subModel, options)) {
         return false;
     }
 

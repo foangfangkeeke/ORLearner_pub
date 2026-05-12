@@ -5,10 +5,6 @@
 0,1440,1
 # curbWeight,weightPerEnergy,mu,g
 9,0,0.2,2.083333333
-# batteryLifespan,batteryDegradation,recyclingPriceRate
-2,0.25,0.25,0.6
-# planningYears
-4
 
 # ChargerCfg
 3

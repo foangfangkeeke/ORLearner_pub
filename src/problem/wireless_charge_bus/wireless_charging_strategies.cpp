@@ -16,7 +16,7 @@ using namespace std;
 namespace fs = std::filesystem;
 
 #define OFFSET_OPERATION_CFG 0
-#define OFFSET_CHARGING_CFG (OFFSET_OPERATION_CFG + 5)
+#define OFFSET_CHARGING_CFG (OFFSET_OPERATION_CFG + 3)
 #define OFFSET_NETWORK_CFG (OFFSET_CHARGING_CFG + 4)
 #define OFFSET_SCHEDULING_CFG (OFFSET_NETWORK_CFG + 2)
 #define OFFSET_CHARGER_CFG(numEB) (OFFSET_SCHEDULING_CFG + 3 + (numEB))
@@ -110,7 +110,7 @@ static optional<linkTimeType> LoadLinkDistance(const fs::path& filePath) {
 
 constexpr const char* kWirelessVarGroupAllVars = "wireless_all_vars";
 constexpr const char* kWirelessBatteryChoicePrefix = "E_choice_";
-constexpr double kWirelessEnergySlackPenalty = 1e6;
+constexpr double kWirelessEnergySlackPenalty = 1e4;
 
 static bool StartsWith(const string& value, const string& prefix)
 {
@@ -152,10 +152,6 @@ struct OperationCfg {
     double g;
     int timeMin;
     int timeMax;
-    int batteryLifespan;
-    vector<double> batteryDegradation;
-    double recyclingPriceRate;
-    int planningYears;
 };
 
 // charger information: fast charging, static wireless charging, dynamic wireless charging
@@ -258,8 +254,6 @@ private:
             vector<string> operationCfgDouble = tmpMiscCfg->at(OFFSET_OPERATION_CFG);
             vector<string> operationCfgInt = tmpMiscCfg->at(OFFSET_OPERATION_CFG + 1);
             vector<string> operationCfgBus = tmpMiscCfg->at(OFFSET_OPERATION_CFG + 2);
-            vector<string> operationCfgBattery = tmpMiscCfg->at(OFFSET_OPERATION_CFG + 3);
-            vector<string> operationCfgPeriod = tmpMiscCfg->at(OFFSET_OPERATION_CFG + 4);
             operationCfg.priceOfPowerDay = stod(operationCfgDouble[0]);
             operationCfg.priceOfPowerNight = stod(operationCfgDouble[1]);
             operationCfg.priceOfUnitBat = stod(operationCfgDouble[2]);
@@ -273,12 +267,6 @@ private:
             operationCfg.weightPerEnergy = stod(operationCfgBus[1]);
             operationCfg.mu = stod(operationCfgBus[2]);
             operationCfg.g = stod(operationCfgBus[3]);
-            operationCfg.batteryLifespan = stoi(operationCfgBattery[0]);
-            for (int i = 0; i < operationCfg.batteryLifespan; i++) {
-                operationCfg.batteryDegradation.push_back(stod(operationCfgBattery[1 + i]));
-            }
-            operationCfg.recyclingPriceRate = stod(operationCfgBattery[1 + operationCfg.batteryLifespan]);
-            operationCfg.planningYears = stoi(operationCfgPeriod[0]);
 
             vector<string> chargerCfgNum = tmpMiscCfg->at(OFFSET_CHARGING_CFG);
             vector<string> chargerCfgRate = tmpMiscCfg->at(OFFSET_CHARGING_CFG + 1);

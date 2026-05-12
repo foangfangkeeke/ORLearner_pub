@@ -1,0 +1,5 @@
+# numScenarios
+2
+# scenario_folder,probability
+scenario_0,0.5
+scenario_1,0.5

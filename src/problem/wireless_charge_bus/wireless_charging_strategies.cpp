@@ -108,14 +108,6 @@ static optional<linkTimeType> LoadLinkDistance(const fs::path& filePath) {
     return links;
 }
 
-inline double getSoH(const int& y, const vector<double>& batteryDegradation) {
-    double soh = 1.0;
-    for (int i = 0; i < y && i < batteryDegradation.size(); ++i) {
-        soh *= (1 - batteryDegradation[i]);
-    }
-    return soh;
-}
-
 constexpr const char* kWirelessVarGroupAllVars = "wireless_all_vars";
 constexpr const char* kWirelessBatteryChoicePrefix = "E_choice_";
 constexpr double kWirelessEnergySlackPenalty = 1e6;
@@ -341,19 +333,7 @@ static double CalcWirelessBatteryChoiceObjCoeff(const ModelData& data)
     const OperationCfg& operationCfg = data.GetOperationCfg();
     const SchedulingCfg& schedulingCfg = data.GetSchedulingCfg();
 
-    auto sohAfterYears = [&](int years) {
-        return getSoH(years, operationCfg.batteryDegradation);
-    };
-
-    const int fullCycles = operationCfg.planningYears / operationCfg.batteryLifespan;
-    const int tailYears = operationCfg.planningYears % operationCfg.batteryLifespan;
-    const double sohAtEol = sohAfterYears(operationCfg.batteryLifespan);
-    const double sohTail = (tailYears > 0) ? sohAfterYears(tailYears) : 0.0;
-    const int batteriesNeeded = fullCycles + (tailYears > 0 ? 1 : 0);
-    const double salvageCapacitySum = fullCycles * sohAtEol + sohTail;
-
-    return schedulingCfg.numEB * operationCfg.priceOfUnitBat *
-        (static_cast<double>(batteriesNeeded) - salvageCapacitySum * operationCfg.recyclingPriceRate);
+    return schedulingCfg.numEB * operationCfg.priceOfUnitBat;
 }
 
 static vector<ProblemDataVar> BuildWirelessMasterVars(const ModelData& data)
@@ -535,10 +515,6 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     ChargerCfg chargerCfg = data.GetChargerCfg();
     SchedulingCfg schedulingCfg = data.GetSchedulingCfg();
     NetworkCfg networkCfg = data.GetNetworkCfg();
-    int planningYears = operationCfg.planningYears;
-    int batteryLifespan = operationCfg.batteryLifespan;
-    int batteryRounds = planningYears / batteryLifespan ;
-    int residualLife = planningYears - batteryRounds * batteryLifespan;
 
     if (options.configureSolverParameters) {
         if (options.mipGap >= 0.0) {
@@ -551,6 +527,7 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
         model.set(GRB_IntParam_Threads, 14);
         model.set(GRB_IntParam_Method, 1);
     }
+
     // decision variable
     GRBVar E = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "E");
 
@@ -568,139 +545,102 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
         string varName = "E_choice_" + to_string(static_cast<int>(cap));
         batteryChoice.push_back(model.addVar(0.0, 1.0, 0.0, GRB_BINARY, varName));
     }
-    vector<vector<GRBVar>> chargeNight_yb; // [year][eb]
+
+    vector<GRBVar> chargeNight_b; // [eb]
     unordered_map<int, GRBVar> wirelessStation;
     unordered_map<int, unordered_map<int, GRBVar>> wirelessLink;
-    vector<vector<vector<unordered_map<int, GRBVar>>>> charge_ybns; // [year][eb][trip][station]
-    vector<vector<vector<unordered_map<int, unordered_map<int, GRBVar>>>>> charge_ybnl; // M3/M4: [year][eb][trip][start][end]
-    vector<vector<vector<vector<GRBVar>>>> energyDep_ybns; // [year][eb][trip][station]
-    vector<vector<vector<vector<GRBVar>>>> energyArr_ybns; // [year][eb][trip][station]
-    vector<vector<vector<vector<GRBVar>>>> energyShortageArr_ybns; // [year][eb][trip][station]
-    vector<vector<GRBVar>> energyShortageArrEnd_yb; // [year][eb]
-    vector<unordered_map<int, unordered_map<int, unordered_map<int, unordered_map<int, GRBVar>>>>> x_ybns_t; // [year][eb][trip][station][time]
+    vector<vector<unordered_map<int, GRBVar>>> charge_bns; // [eb][trip][station]
+    vector<vector<unordered_map<int, unordered_map<int, GRBVar>>>> charge_bnl; // [eb][trip][start][end]
+    vector<vector<vector<GRBVar>>> energyDep_bns; // [eb][trip][station]
+    vector<vector<vector<GRBVar>>> energyArr_bns; // [eb][trip][station]
+    vector<vector<vector<GRBVar>>> energyShortageArr_bns; // [eb][trip][station]
+    vector<GRBVar> energyShortageArrEnd_b; // [eb]
+    unordered_map<int, unordered_map<int, unordered_map<int, unordered_map<int, GRBVar>>>> x_bns_t; // [eb][trip][station][time]
 
     size_t numEB = schedulingCfg.numEB;
 
-    chargeNight_yb.reserve(batteryLifespan);
-    charge_ybns.reserve(batteryLifespan);
-    charge_ybnl.reserve(batteryLifespan);
-    energyDep_ybns.reserve(batteryLifespan);
-    energyArr_ybns.reserve(batteryLifespan);
-    energyShortageArr_ybns.reserve(batteryLifespan);
-    energyShortageArrEnd_yb.reserve(batteryLifespan);
-    x_ybns_t.reserve(batteryLifespan);
-
-    vector<unordered_map<int, vector<GRBLinExpr>>> chargerOccupy;
-    chargerOccupy.reserve(batteryLifespan);
-    for (int year = 0; year < batteryLifespan; year++) {
-        unordered_map<int, vector<GRBLinExpr>> chargerOccupyYearly;
-        for (int chargerPhy : networkCfg.chargerPhys) {
-            chargerOccupyYearly[chargerPhy].resize(operationCfg.timeMax - operationCfg.timeMin);
-        }
-        chargerOccupy.push_back(chargerOccupyYearly);
+    chargeNight_b.reserve(numEB);
+    energyShortageArrEnd_b.reserve(numEB);
+    for (int eb : schedulingCfg.EBs) {
+        string varName = "c_Night_b" + to_string(eb);
+        chargeNight_b.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varName));
+        string shortageName = "e_ShortageArrEnd_b" + to_string(eb);
+        energyShortageArrEnd_b.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, shortageName));
     }
 
-    for (int year = 0; year < batteryLifespan; year++) {
-        vector<GRBVar> chargeNight_y;
-        vector<GRBVar> energyShortageArrEnd_y;
-        chargeNight_y.reserve(numEB);
-        energyShortageArrEnd_y.reserve(numEB);
-        for (int eb : schedulingCfg.EBs) {
-            string varName = "c_Night_y" + to_string(year) + "_b" + to_string(eb);
-            chargeNight_y.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varName));
-            string shortageName = "e_ShortageArrEnd_y" + to_string(year) + "_b" + to_string(eb);
-            energyShortageArrEnd_y.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, shortageName));
-        }
-        chargeNight_yb.push_back(chargeNight_y);
-        energyShortageArrEnd_yb.push_back(energyShortageArrEnd_y);
+    unordered_map<int, vector<GRBLinExpr>> chargerOccupy;
+    for (int chargerPhy : networkCfg.chargerPhys) {
+        chargerOccupy[chargerPhy].resize(operationCfg.timeMax - operationCfg.timeMin);
     }
 
-    for (int year = 0; year < batteryLifespan; year++) {
-        vector<vector<unordered_map<int, GRBVar>>> charge_y;
-        vector<vector<vector<GRBVar>>> energyDep_y;
-        vector<vector<vector<GRBVar>>> energyArr_y;
-        vector<vector<vector<GRBVar>>> energyShortageArr_y;
-        charge_y.reserve(numEB);
-        energyDep_y.reserve(numEB);
-        energyArr_y.reserve(numEB);
-        energyShortageArr_y.reserve(numEB);
+    charge_bns.reserve(numEB);
+    energyDep_bns.reserve(numEB);
+    energyArr_bns.reserve(numEB);
+    energyShortageArr_bns.reserve(numEB);
 
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
-            vector<unordered_map<int, GRBVar>> charge_yb;
-            vector<vector<GRBVar>> energyDep_yb;
-            vector<vector<GRBVar>> energyArr_yb;
-            vector<vector<GRBVar>> energyShortageArr_yb;
-            charge_yb.reserve(numEBTrip);
-            energyDep_yb.reserve(numEBTrip);
-            energyArr_yb.reserve(numEBTrip);
-            energyShortageArr_yb.reserve(numEBTrip);
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
+        vector<unordered_map<int, GRBVar>> charge_b;
+        vector<vector<GRBVar>> energyDep_b;
+        vector<vector<GRBVar>> energyArr_b;
+        vector<vector<GRBVar>> energyShortageArr_b;
+        charge_b.reserve(numEBTrip);
+        energyDep_b.reserve(numEBTrip);
+        energyArr_b.reserve(numEBTrip);
+        energyShortageArr_b.reserve(numEBTrip);
 
-            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
-                unordered_map<int, GRBVar> charge_ybn;
-                vector<GRBVar> energyDep_ybn;
-                vector<GRBVar> energyArr_ybn;
-                vector<GRBVar> energyShortageArr_ybn;
-                energyDep_ybn.reserve(numEBTripStations);
-                energyArr_ybn.reserve(numEBTripStations);
-                energyShortageArr_ybn.reserve(numEBTripStations);
+        for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+            int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
+            unordered_map<int, GRBVar> charge_bn;
+            vector<GRBVar> energyDep_bn;
+            vector<GRBVar> energyArr_bn;
+            vector<GRBVar> energyShortageArr_bn;
+            energyDep_bn.reserve(numEBTripStations);
+            energyArr_bn.reserve(numEBTripStations);
+            energyShortageArr_bn.reserve(numEBTripStations);
 
-                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                    int station = schedulingCfg.stationTrips[trip][stationIdx];
-                    string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
-                    string varNameEnergyDep = "e_Dep" + sub;
-                    string varNameEnergyArr = "e_Arr" + sub;
-                    string varNameEnergyShortageArr = "e_ShortageArr" + sub;
-                    energyDep_ybn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varNameEnergyDep));
-                    energyArr_ybn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varNameEnergyArr));
-                    energyShortageArr_ybn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varNameEnergyShortageArr));
-                    string varNameCharge = "c" + sub;
-                    charge_ybn[station] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varNameCharge);
-                }
-                charge_yb.push_back(charge_ybn);
-                energyDep_yb.push_back(energyDep_ybn);
-                energyArr_yb.push_back(energyArr_ybn);
-                energyShortageArr_yb.push_back(energyShortageArr_ybn);
+            for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                int station = schedulingCfg.stationTrips[trip][stationIdx];
+                string sub = "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
+                energyDep_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "e_Dep" + sub));
+                energyArr_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "e_Arr" + sub));
+                energyShortageArr_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "e_ShortageArr" + sub));
+                charge_bn[station] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
             }
-            charge_y.push_back(charge_yb);
-            energyDep_y.push_back(energyDep_yb);
-            energyArr_y.push_back(energyArr_yb);
-            energyShortageArr_y.push_back(energyShortageArr_yb);
+            charge_b.push_back(charge_bn);
+            energyDep_b.push_back(energyDep_bn);
+            energyArr_b.push_back(energyArr_bn);
+            energyShortageArr_b.push_back(energyShortageArr_bn);
         }
-        charge_ybns.push_back(charge_y);
-        energyDep_ybns.push_back(energyDep_y);
-        energyArr_ybns.push_back(energyArr_y);
-        energyShortageArr_ybns.push_back(energyShortageArr_y);
+        charge_bns.push_back(charge_b);
+        energyDep_bns.push_back(energyDep_b);
+        energyArr_bns.push_back(energyArr_b);
+        energyShortageArr_bns.push_back(energyShortageArr_b);
     }
 
     // stationOccupy
-    for (int year = 0; year < batteryLifespan; year++) {
-        unordered_map<int, unordered_map<int, unordered_map<int, unordered_map<int, GRBVar>>>> x_y;
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
-            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
-                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                    int station = schedulingCfg.stationTrips[trip][stationIdx];
-                    if (!networkCfg.chargerPhys.count(station)) {
-                        continue;
-                    }
-                    int arrTime = schedulingCfg.stationArrTimes[trip][stationIdx];
-                    int depTime = schedulingCfg.stationDepTimes[trip][stationIdx];
-                    for (int time = arrTime; time < depTime; time++) {
-                        string varName = "x_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) +
-                                                                 "_s" + to_string(station) + "_i" + to_string(stationIdx) + "_t" + to_string(time);
-                        x_y[eb][trip][station][time] = model.addVar(0, 1, 0, GRB_BINARY, varName);
-                    }
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
+        for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+            int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
+            for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                int station = schedulingCfg.stationTrips[trip][stationIdx];
+                if (!networkCfg.chargerPhys.count(station)) {
+                    continue;
+                }
+                int arrTime = schedulingCfg.stationArrTimes[trip][stationIdx];
+                int depTime = schedulingCfg.stationDepTimes[trip][stationIdx];
+                for (int time = arrTime; time < depTime; time++) {
+                    string varName = "x_b" + to_string(eb) + "_n" + to_string(trip) +
+                                     "_s" + to_string(station) + "_i" + to_string(stationIdx) + "_t" + to_string(time);
+                    x_bns_t[eb][trip][station][time] = model.addVar(0, 1, 0, GRB_BINARY, varName);
                 }
             }
         }
-        x_ybns_t.push_back(x_y);
     }
 
     // static wireless charging facility
@@ -712,44 +652,41 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     }
 
     // dynamic wireless charging
-    for (int year = 0; year < batteryLifespan; year++) {
-        vector<vector<unordered_map<int, unordered_map<int, GRBVar>>>> charge_y;
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            auto eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
-            vector<unordered_map<int, unordered_map<int, GRBVar>>> charge_yb;
-            charge_yb.reserve(numEBTrip);
-            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                auto tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
-                unordered_map<int, unordered_map<int, GRBVar>> charge_ybn;
-                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                    int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                    int tripArr;
-                    int stationArr;
-                    int stationArrIdx;
-                    if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                        if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
-                            continue;
-                        }
-                        tripArr = schedulingCfg.tripEBs[ebIdx][tripIdx + 1];
-                        stationArrIdx = 0;
-                        stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
-                    } else {
-                        tripArr = tripDep;
-                        stationArrIdx = stationIdx + 1;
-                        stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
+    charge_bnl.reserve(numEB);
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        auto eb = schedulingCfg.EBs[ebIdx];
+        size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
+        vector<unordered_map<int, unordered_map<int, GRBVar>>> charge_b;
+        charge_b.reserve(numEBTrip);
+        for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+            auto tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
+            unordered_map<int, unordered_map<int, GRBVar>> charge_bn;
+            for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
+                int tripArr;
+                int stationArr;
+                int stationArrIdx;
+                if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
+                    if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
+                        continue;
                     }
-
-                    string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
-                                 "_i" + to_string(stationIdx) + "To_n" + to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
-                    charge_ybn[stationDep][stationArr] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
+                    tripArr = schedulingCfg.tripEBs[ebIdx][tripIdx + 1];
+                    stationArrIdx = 0;
+                    stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
+                } else {
+                    tripArr = tripDep;
+                    stationArrIdx = stationIdx + 1;
+                    stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
                 }
-                charge_yb.push_back(charge_ybn);
+
+                string sub = "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
+                             "_i" + to_string(stationIdx) + "To_n" + to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
+                charge_bn[stationDep][stationArr] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
             }
-            charge_y.push_back(charge_yb);
+            charge_b.push_back(charge_bn);
         }
-        charge_ybnl.push_back(charge_y);
+        charge_bnl.push_back(charge_b);
     }
 
     // dynamic wireless charging facility
@@ -765,87 +702,62 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     // objective function
     GRBLinExpr obj = 0;
 
-    for (int year = 0; year < batteryLifespan; year++) {
-        GRBLinExpr sum_day = 0;
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
-                for (const auto& [_, chargeVar] : charge_ybns[year][ebIdx][tripIdx]) {
-                    sum_day += chargeVar;
-                }
+    GRBLinExpr sum_day = 0;
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+            for (const auto& [_, chargeVar] : charge_bns[ebIdx][tripIdx]) {
+                sum_day += chargeVar;
             }
         }
-
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
-            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
-                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                    int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                    int tripArr;
-                    int stationArr;
-                    if (stationIdx == numEBTripStations - 1) {
-                        if (tripIdx == numEBTrip - 1) {
-                            continue;
-                        }
-                        tripArr = schedulingCfg.tripEBs[ebIdx][tripIdx + 1];
-                        stationArr = schedulingCfg.stationTrips[tripArr][0];
-                    } else {
-                        tripArr = tripDep;
-                        stationArr = schedulingCfg.stationTrips[tripArr][stationIdx + 1];
-                    }
-
-                    sum_day += charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr];
-                }
-            }
-        }
-
-        GRBLinExpr sum_night = 0;
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            sum_night += chargeNight_yb[year][ebIdx];
-        }
-
-        GRBLinExpr sum_energy_shortage = 0;
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
-            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
-                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                    sum_energy_shortage += energyShortageArr_ybns[year][ebIdx][tripIdx][stationIdx];
-                }
-            }
-            sum_energy_shortage += energyShortageArrEnd_yb[year][ebIdx];
-        }
-
-        int yearCount = batteryRounds;
-        if (year < residualLife) {
-            yearCount = batteryRounds + 1;
-        }
-        obj += 365 * yearCount * (operationCfg.priceOfPowerDay * sum_day + operationCfg.priceOfPowerNight * sum_night);
-        obj += 365 * yearCount * kWirelessEnergySlackPenalty * sum_energy_shortage;
     }
 
-    vector<double> wearPattern = operationCfg.batteryDegradation;
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
+        for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+            int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
+            for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
+                int tripArr;
+                int stationArr;
+                if (stationIdx == numEBTripStations - 1) {
+                    if (tripIdx == numEBTrip - 1) {
+                        continue;
+                    }
+                    tripArr = schedulingCfg.tripEBs[ebIdx][tripIdx + 1];
+                    stationArr = schedulingCfg.stationTrips[tripArr][0];
+                } else {
+                    tripArr = tripDep;
+                    stationArr = schedulingCfg.stationTrips[tripArr][stationIdx + 1];
+                }
 
-    auto sohAfterYears = [&](int years) {
-        return getSoH(years, wearPattern); // multiplicative SoH from yearly degradation
-    };
+                sum_day += charge_bnl[ebIdx][tripIdx][stationDep][stationArr];
+            }
+        }
+    }
 
-    int fullCycles = planningYears / batteryLifespan;           // packs that run full lifespan
-    int tailYears = planningYears % batteryLifespan;            // remaining years on the last pack
+    GRBLinExpr sum_night = 0;
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        sum_night += chargeNight_b[ebIdx];
+    }
 
-    double sohAtEol = sohAfterYears(batteryLifespan);           // remaining capacity after a full lifespan
-    double sohTail = (tailYears > 0) ? sohAfterYears(tailYears) : 0.0; // remaining capacity of the final partial pack
+    GRBLinExpr sum_energy_shortage = 0;
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
+        for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+            int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
+            for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                sum_energy_shortage += energyShortageArr_bns[ebIdx][tripIdx][stationIdx];
+            }
+        }
+        sum_energy_shortage += energyShortageArrEnd_b[ebIdx];
+    }
 
-    int batteriesNeeded = fullCycles + (tailYears > 0 ? 1 : 0);
-    double salvageCapacitySum = fullCycles * sohAtEol + sohTail;
+    obj += operationCfg.priceOfPowerDay * sum_day + operationCfg.priceOfPowerNight * sum_night;
+    obj += kWirelessEnergySlackPenalty * sum_energy_shortage;
 
-    const double batteryChoiceObjCoeff = numEB * operationCfg.priceOfUnitBat *
-        (static_cast<double>(batteriesNeeded) - salvageCapacitySum * operationCfg.recyclingPriceRate);
+    const double batteryChoiceObjCoeff = numEB * operationCfg.priceOfUnitBat;
     for (size_t i = 0; i < batteryChoice.size(); ++i) {
         const double coeff = batteryChoiceObjCoeff * batteryOptions[i];
         if (options.includeFirstStageObjective) {
@@ -891,238 +803,235 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     model.addConstr(E == capacitySelector, "constrEChoiceTie");
 
     // energy range
-    for (int year = 0; year < batteryLifespan; year++) {
-        double yearlyBatteryCapacityFactor = getSoH(year, operationCfg.batteryDegradation);
-        double yearlySocMax = operationCfg.socMax * yearlyBatteryCapacityFactor;
-        double yearlySocMin = operationCfg.socMin * yearlyBatteryCapacityFactor;
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
-            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
-                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                    int station = schedulingCfg.stationTrips[trip][stationIdx];
-                    string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
-                    GRBVar arrE = energyArr_ybns[year][ebIdx][tripIdx][stationIdx];
-                    GRBVar depE = energyDep_ybns[year][ebIdx][tripIdx][stationIdx];
-                    GRBVar shortageArr = energyShortageArr_ybns[year][ebIdx][tripIdx][stationIdx];
-                    model.addConstr(arrE + shortageArr >= E * yearlySocMin, "constrArrMin" + sub);
-                    model.addConstr(arrE <= E * yearlySocMax, "constrArrMax" + sub);
-                    model.addConstr(depE >= E * yearlySocMin, "constrDepMin" + sub);
-                    model.addConstr(depE <= E * yearlySocMax, "constrDepMax" + sub);
-                }
+    const double socMax = operationCfg.socMax;
+    const double socMin = operationCfg.socMin;
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
+        for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+            int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
+            for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                int station = schedulingCfg.stationTrips[trip][stationIdx];
+                string sub = "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
+                GRBVar arrE = energyArr_bns[ebIdx][tripIdx][stationIdx];
+                GRBVar depE = energyDep_bns[ebIdx][tripIdx][stationIdx];
+                GRBVar shortageArr = energyShortageArr_bns[ebIdx][tripIdx][stationIdx];
+                model.addConstr(arrE + shortageArr >= E * socMin, "constrArrMin" + sub);
+                model.addConstr(arrE <= E * socMax, "constrArrMax" + sub);
+                model.addConstr(depE >= E * socMin, "constrDepMin" + sub);
+                model.addConstr(depE <= E * socMax, "constrDepMax" + sub);
             }
         }
+    }
 
     // number of fast charger
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
-            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
-                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                    int station = schedulingCfg.stationTrips[trip][stationIdx];
-                    if (!networkCfg.chargerPhys.count(station)) {
-                        continue;
-                    }
-                    int arrTime = schedulingCfg.stationArrTimes[trip][stationIdx];
-                    int depTime = schedulingCfg.stationDepTimes[trip][stationIdx];
-                    for (int time = arrTime; time < depTime; time++) {
-                        chargerOccupy[year][station][time] += x_ybns_t[year][eb][trip][station][time];
-                    }
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
+        for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+            int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
+            for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                int station = schedulingCfg.stationTrips[trip][stationIdx];
+                if (!networkCfg.chargerPhys.count(station)) {
+                    continue;
+                }
+                int arrTime = schedulingCfg.stationArrTimes[trip][stationIdx];
+                int depTime = schedulingCfg.stationDepTimes[trip][stationIdx];
+                for (int time = arrTime; time < depTime; time++) {
+                    chargerOccupy[station][time] += x_bns_t[eb][trip][station][time];
                 }
             }
         }
-        for (int chargerPhy : networkCfg.chargerPhys) {
-            for (int time = operationCfg.timeMin; time < operationCfg.timeMax; time++) {
-                if (chargerOccupy[year][chargerPhy][time].size() > 0) {
-                    string sub = "_y" + to_string(year) + "_t" + to_string(time) + "_c" + to_string(chargerPhy);
-                    model.addConstr(chargerOccupy[year][chargerPhy][time] <= networkCfg.chargerNums[chargerPhy], "constChargerNum" + sub);
-                }
+    }
+    for (int chargerPhy : networkCfg.chargerPhys) {
+        for (int time = operationCfg.timeMin; time < operationCfg.timeMax; time++) {
+            if (chargerOccupy[chargerPhy][time].size() > 0) {
+                string sub = "_t" + to_string(time) + "_c" + to_string(chargerPhy);
+                model.addConstr(chargerOccupy[chargerPhy][time] <= networkCfg.chargerNums[chargerPhy], "constChargerNum" + sub);
             }
         }
+    }
 
     // c_bns in fast charging stations
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
-                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
-                    int station = schedulingCfg.stationTrips[trip][stationIdx];
-                    if (!networkCfg.chargerPhys.count(station)) {
-                        continue;
-                    }
-                    string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
-                    GRBVar charge = charge_ybns[year][ebIdx][tripIdx][station];
-                    GRBLinExpr occupyTime;
-                    for (int time = schedulingCfg.stationArrTimes[trip][stationIdx];
-                             time < schedulingCfg.stationDepTimes[trip][stationIdx]; time++) {
-                        occupyTime += x_ybns_t[year][eb][trip][station][time];
-                    }
-                    model.addConstr(charge <= chargerCfg.chargeRate[0] * occupyTime, "constrChargeFast" + sub);
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+            int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
+                int station = schedulingCfg.stationTrips[trip][stationIdx];
+                if (!networkCfg.chargerPhys.count(station)) {
+                    continue;
                 }
+                string sub = "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
+                GRBVar charge = charge_bns[ebIdx][tripIdx][station];
+                GRBLinExpr occupyTime;
+                for (int time = schedulingCfg.stationArrTimes[trip][stationIdx];
+                         time < schedulingCfg.stationDepTimes[trip][stationIdx]; time++) {
+                    occupyTime += x_bns_t[eb][trip][station][time];
+                }
+                model.addConstr(charge <= chargerCfg.chargeRate[0] * occupyTime, "constrChargeFast" + sub);
             }
         }
+    }
 
     // c_bns in static wireless charging stations
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
-                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
-                    int station = schedulingCfg.stationTrips[trip][stationIdx];
-                    if (networkCfg.chargerPhys.count(station)) {
-                        continue;
-                    }
-                    string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
-                    GRBVar charge = charge_ybns[year][ebIdx][tripIdx][station];
-                    GRBVar isBuilt = wirelessStation[station];
-                    int stayTime = schedulingCfg.stationDepTimes[trip][stationIdx] - schedulingCfg.stationArrTimes[trip][stationIdx];
-                    model.addConstr(charge <= chargerCfg.chargeRate[1] * isBuilt * stayTime,
-                                    "constrChargeWirelessStation" + sub);
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+            int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
+                int station = schedulingCfg.stationTrips[trip][stationIdx];
+                if (networkCfg.chargerPhys.count(station)) {
+                    continue;
                 }
+                string sub = "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
+                GRBVar charge = charge_bns[ebIdx][tripIdx][station];
+                GRBVar isBuilt = wirelessStation[station];
+                int stayTime = schedulingCfg.stationDepTimes[trip][stationIdx] - schedulingCfg.stationArrTimes[trip][stationIdx];
+                model.addConstr(charge <= chargerCfg.chargeRate[1] * isBuilt * stayTime,
+                                "constrChargeWirelessStation" + sub);
             }
         }
+    }
 
     // c_bnl in dynamic wireless charging links
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
-                int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[tripDep].size(); stationIdx++) {
-                    int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                    int tripArrIdx;
-                    int stationArrIdx;
-                    if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                        if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
-                            continue;
-                        }
-                        tripArrIdx = tripIdx + 1;
-                        stationArrIdx = 0;
-                    } else {
-                        tripArrIdx = tripIdx;
-                        stationArrIdx = stationIdx + 1;
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+            int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[tripDep].size(); stationIdx++) {
+                int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
+                int tripArrIdx;
+                int stationArrIdx;
+                if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
+                    if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
+                        continue;
                     }
-
-                    int tripArr = schedulingCfg.tripEBs[ebIdx][tripArrIdx];
-                    int stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
-
-                    string subCharge = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
-                                       "_i" + to_string(stationIdx) + "To_n" + to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
-                    GRBVar linkCharge = charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr];
-                    GRBVar isBuilt = wirelessLink[stationDep][stationArr];
-                    int timeDep = schedulingCfg.stationDepTimes[tripDep][stationIdx];
-                    int timeArr = schedulingCfg.stationArrTimes[tripArr][stationArrIdx];
-                    int travel_time = timeArr - timeDep;
-                    model.addConstr(linkCharge <= chargerCfg.chargeRate[2] * travel_time * isBuilt,
-                        "constrChargeWirelessLink" + subCharge);
+                    tripArrIdx = tripIdx + 1;
+                    stationArrIdx = 0;
+                } else {
+                    tripArrIdx = tripIdx;
+                    stationArrIdx = stationIdx + 1;
                 }
+
+                int tripArr = schedulingCfg.tripEBs[ebIdx][tripArrIdx];
+                int stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
+
+                string subCharge = "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
+                                   "_i" + to_string(stationIdx) + "To_n" + to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
+                GRBVar linkCharge = charge_bnl[ebIdx][tripIdx][stationDep][stationArr];
+                GRBVar isBuilt = wirelessLink[stationDep][stationArr];
+                int timeDep = schedulingCfg.stationDepTimes[tripDep][stationIdx];
+                int timeArr = schedulingCfg.stationArrTimes[tripArr][stationArrIdx];
+                int travel_time = timeArr - timeDep;
+                model.addConstr(linkCharge <= chargerCfg.chargeRate[2] * travel_time * isBuilt,
+                    "constrChargeWirelessLink" + subCharge);
             }
         }
+    }
 
     // energy of the first and the last trips
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            const auto& trips = schedulingCfg.tripEBs[ebIdx];
-            int startTripIdx = 0;
-            int startTrip = trips[startTripIdx];
-            int startStationIdx = 0;
-            int startStation = schedulingCfg.stationTrips[startTrip][startStationIdx];
-            string subStart = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(startTrip) + "_s" + to_string(startStation) + "_i" + to_string(startStationIdx);
-            double distStart = networkCfg.startDistanceEBs[ebIdx];
-            GRBLinExpr consumptionStart = distStart * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-            GRBVar startEnergy = energyArr_ybns[year][ebIdx][startTripIdx][startStationIdx];
-            model.addConstr(startEnergy == E * yearlySocMax - consumptionStart, "e_Start" + subStart);
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        const auto& trips = schedulingCfg.tripEBs[ebIdx];
+        int startTripIdx = 0;
+        int startTrip = trips[startTripIdx];
+        int startStationIdx = 0;
+        int startStation = schedulingCfg.stationTrips[startTrip][startStationIdx];
+        string subStart = "_b" + to_string(eb) + "_n" + to_string(startTrip) + "_s" + to_string(startStation) + "_i" + to_string(startStationIdx);
+        double distStart = networkCfg.startDistanceEBs[ebIdx];
+        GRBLinExpr consumptionStart = distStart * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
+        GRBVar startEnergy = energyArr_bns[ebIdx][startTripIdx][startStationIdx];
+        model.addConstr(startEnergy == E * socMax - consumptionStart, "e_Start" + subStart);
 
-            int endTripIdx = trips.size() - 1;
-            int endTrip = trips[endTripIdx];
-            int endStationIdx = schedulingCfg.stationTrips[endTrip].size() - 1;
-            int endStation = schedulingCfg.stationTrips[endTrip][endStationIdx];
-            string subEnd = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(endTrip) + "_s" + to_string(endStation) + "_i" + to_string(endStationIdx);
-            double distEnd = networkCfg.endDistanceEBs[ebIdx];
-            GRBLinExpr consumptionEnd = distEnd * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-            GRBVar endEnergy = energyDep_ybns[year][ebIdx][endTripIdx][endStationIdx];
-            GRBVar endShortage = energyShortageArrEnd_yb[year][ebIdx];
-            model.addConstr(endEnergy + endShortage >= E * yearlySocMin + consumptionEnd, "e_End" + subEnd);
-        }
+        int endTripIdx = trips.size() - 1;
+        int endTrip = trips[endTripIdx];
+        int endStationIdx = schedulingCfg.stationTrips[endTrip].size() - 1;
+        int endStation = schedulingCfg.stationTrips[endTrip][endStationIdx];
+        string subEnd = "_b" + to_string(eb) + "_n" + to_string(endTrip) + "_s" + to_string(endStation) + "_i" + to_string(endStationIdx);
+        double distEnd = networkCfg.endDistanceEBs[ebIdx];
+        GRBLinExpr consumptionEnd = distEnd * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
+        GRBVar endEnergy = energyDep_bns[ebIdx][endTripIdx][endStationIdx];
+        GRBVar endShortage = energyShortageArrEnd_b[ebIdx];
+        model.addConstr(endEnergy + endShortage >= E * socMin + consumptionEnd, "e_End" + subEnd);
+    }
 
     // inner station energy connection
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
-                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
-                    int station = schedulingCfg.stationTrips[trip][stationIdx];
-                    string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
-                    GRBVar arrE = energyArr_ybns[year][ebIdx][tripIdx][stationIdx];
-                    GRBVar depE = energyDep_ybns[year][ebIdx][tripIdx][stationIdx];
-                    GRBVar shortageArr = energyShortageArr_ybns[year][ebIdx][tripIdx][stationIdx];
-                    if (networkCfg.chargerPhys.count(station)) {
-                        GRBVar charge = charge_ybns[year][ebIdx][tripIdx][station];
-                        model.addConstr(depE == arrE + shortageArr + charge * chargerCfg.chargeEfficiency[0],
-                                        "e_InnerStation" + sub);
-                    } else {
-                        GRBVar charge = charge_ybns[year][ebIdx][tripIdx][station];
-                        model.addConstr(depE == arrE + shortageArr + charge * chargerCfg.chargeEfficiency[1],
-                                        "e_InnerStation" + sub);
-                    }
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+            int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[trip].size(); stationIdx++) {
+                int station = schedulingCfg.stationTrips[trip][stationIdx];
+                string sub = "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
+                GRBVar arrE = energyArr_bns[ebIdx][tripIdx][stationIdx];
+                GRBVar depE = energyDep_bns[ebIdx][tripIdx][stationIdx];
+                GRBVar shortageArr = energyShortageArr_bns[ebIdx][tripIdx][stationIdx];
+                if (networkCfg.chargerPhys.count(station)) {
+                    GRBVar charge = charge_bns[ebIdx][tripIdx][station];
+                    model.addConstr(depE == arrE + shortageArr + charge * chargerCfg.chargeEfficiency[0],
+                                    "e_InnerStation" + sub);
+                } else {
+                    GRBVar charge = charge_bns[ebIdx][tripIdx][station];
+                    model.addConstr(depE == arrE + shortageArr + charge * chargerCfg.chargeEfficiency[1],
+                                    "e_InnerStation" + sub);
                 }
             }
         }
+    }
 
     // inter station energy connection
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
-                int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[tripDep].size(); stationIdx++) {
-                    int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                    string subDep = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) + "_i" + to_string(stationIdx);
-                    GRBVar depE = energyDep_ybns[year][ebIdx][tripIdx][stationIdx];
-                    int tripArrIdx;
-                    int stationArrIdx;
-                    if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                        if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
-                            continue;
-                        }
-                        tripArrIdx = tripIdx + 1;
-                        stationArrIdx = 0;
-                    } else {
-                        tripArrIdx = tripIdx;
-                        stationArrIdx = stationIdx + 1;
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        for (int tripIdx = 0; tripIdx < schedulingCfg.tripEBs[ebIdx].size(); tripIdx++) {
+            int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            for (int stationIdx = 0; stationIdx < schedulingCfg.stationTrips[tripDep].size(); stationIdx++) {
+                int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
+                string subDep = "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) + "_i" + to_string(stationIdx);
+                GRBVar depE = energyDep_bns[ebIdx][tripIdx][stationIdx];
+                int tripArrIdx;
+                int stationArrIdx;
+                if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
+                    if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
+                        continue;
                     }
-
-                    int tripArr = schedulingCfg.tripEBs[ebIdx][tripArrIdx];
-                    int stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
-                    GRBVar arrE = energyArr_ybns[year][ebIdx][tripArrIdx][stationArrIdx];
-                    double dist = networkCfg.linkDistances[stationDep][stationArr];
-                    GRBLinExpr consumption = dist * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-                    GRBVar linkCharge = charge_ybnl[year][ebIdx][tripIdx][stationDep][stationArr];
-                    model.addConstr(arrE == depE - consumption + linkCharge * chargerCfg.chargeEfficiency[2],
-                                    "e_InterStation" + subDep);
+                    tripArrIdx = tripIdx + 1;
+                    stationArrIdx = 0;
+                } else {
+                    tripArrIdx = tripIdx;
+                    stationArrIdx = stationIdx + 1;
                 }
+
+                int tripArr = schedulingCfg.tripEBs[ebIdx][tripArrIdx];
+                int stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
+                GRBVar arrE = energyArr_bns[ebIdx][tripArrIdx][stationArrIdx];
+                double dist = networkCfg.linkDistances[stationDep][stationArr];
+                GRBLinExpr consumption = dist * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
+                GRBVar linkCharge = charge_bnl[ebIdx][tripIdx][stationDep][stationArr];
+                model.addConstr(arrE == depE - consumption + linkCharge * chargerCfg.chargeEfficiency[2],
+                                "e_InterStation" + subDep);
             }
         }
+    }
 
     // overnight charging
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            const auto& trips = schedulingCfg.tripEBs[ebIdx];
-            int endTripIdx = trips.size() - 1;
-            int endTrip = trips[endTripIdx];
-            int stationIdx = schedulingCfg.stationTrips[endTrip].size() - 1;
-            int station = schedulingCfg.stationTrips[endTrip][stationIdx];
-            string subEnd = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(endTrip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
-            GRBVar endDepE = energyDep_ybns[year][ebIdx][endTripIdx][stationIdx];
-            GRBVar endShortage = energyShortageArrEnd_yb[year][ebIdx];
-            GRBVar nightCharge = chargeNight_yb[year][ebIdx];
-            double dist = networkCfg.endDistanceEBs[ebIdx];
-            GRBLinExpr consumption = dist * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
-            model.addConstr(nightCharge * chargerCfg.chargeEfficiency[0] == E * yearlySocMax - (endDepE + endShortage - consumption),
-                            "e_Overnight_y" + to_string(year) + "_b" + to_string(eb));
-        }
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        const auto& trips = schedulingCfg.tripEBs[ebIdx];
+        int endTripIdx = trips.size() - 1;
+        int endTrip = trips[endTripIdx];
+        int stationIdx = schedulingCfg.stationTrips[endTrip].size() - 1;
+        int station = schedulingCfg.stationTrips[endTrip][stationIdx];
+        string subEnd = "_b" + to_string(eb) + "_n" + to_string(endTrip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
+        GRBVar endDepE = energyDep_bns[ebIdx][endTripIdx][stationIdx];
+        GRBVar endShortage = energyShortageArrEnd_b[ebIdx];
+        GRBVar nightCharge = chargeNight_b[ebIdx];
+        double dist = networkCfg.endDistanceEBs[ebIdx];
+        GRBLinExpr consumption = dist * (operationCfg.curbWeight + E * operationCfg.weightPerEnergy) * operationCfg.mu * operationCfg.g / 3.6;
+        model.addConstr(nightCharge * chargerCfg.chargeEfficiency[0] == E * socMax - (endDepE + endShortage - consumption),
+                        "e_Overnight_b" + to_string(eb));
     }
 
     model.setObjective(obj, GRB_MINIMIZE);
@@ -1142,7 +1051,6 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder, GRBMode
     OperationCfg operationCfg = data.GetOperationCfg();
     SchedulingCfg schedulingCfg = data.GetSchedulingCfg();
     NetworkCfg networkCfg = data.GetNetworkCfg();
-    int batteryLifespan = operationCfg.batteryLifespan;
 
     if (options.configureSolverParameters) {
         if (options.mipGap >= 0.0) {
@@ -1156,147 +1064,119 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder, GRBMode
         model.set(GRB_IntParam_Method, 1);
     }
 
-    vector<vector<GRBVar>> chargeNight_yb; // [year][eb]
-    vector<vector<vector<unordered_map<int, GRBVar>>>> charge_ybns; // [year][eb][trip][station]
-    vector<vector<vector<unordered_map<int, unordered_map<int, GRBVar>>>>> charge_ybnl; // [year][eb][trip][start][end]
-    vector<vector<vector<vector<GRBVar>>>> energyDep_ybns; // [year][eb][trip][station]
-    vector<vector<vector<vector<GRBVar>>>> energyArr_ybns; // [year][eb][trip][station]
-    vector<unordered_map<int, unordered_map<int, unordered_map<int, unordered_map<int, GRBVar>>>>> x_ybns_t; // [year][eb][trip][station][time]
+    vector<GRBVar> chargeNight_b; // [eb]
+    vector<vector<unordered_map<int, GRBVar>>> charge_bns; // [eb][trip][station]
+    vector<vector<unordered_map<int, unordered_map<int, GRBVar>>>> charge_bnl; // [eb][trip][start][end]
+    vector<vector<vector<GRBVar>>> energyDep_bns; // [eb][trip][station]
+    vector<vector<vector<GRBVar>>> energyArr_bns; // [eb][trip][station]
+    unordered_map<int, unordered_map<int, unordered_map<int, unordered_map<int, GRBVar>>>> x_bns_t; // [eb][trip][station][time]
 
     size_t numEB = schedulingCfg.numEB;
 
-    chargeNight_yb.reserve(batteryLifespan);
-    charge_ybns.reserve(batteryLifespan);
-    charge_ybnl.reserve(batteryLifespan);
-    energyDep_ybns.reserve(batteryLifespan);
-    energyArr_ybns.reserve(batteryLifespan);
-    x_ybns_t.reserve(batteryLifespan);
-
-    for (int year = 0; year < batteryLifespan; year++) {
-        vector<GRBVar> chargeNight_y;
-        chargeNight_y.reserve(numEB);
-        for (int eb : schedulingCfg.EBs) {
-            string varName = "c_Night_y" + to_string(year) + "_b" + to_string(eb);
-            chargeNight_y.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varName));
-        }
-        chargeNight_yb.push_back(chargeNight_y);
+    chargeNight_b.reserve(numEB);
+    for (int eb : schedulingCfg.EBs) {
+        string varName = "c_Night_b" + to_string(eb);
+        chargeNight_b.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varName));
     }
 
-    for (int year = 0; year < batteryLifespan; year++) {
-        vector<vector<unordered_map<int, GRBVar>>> charge_y;
-        vector<vector<vector<GRBVar>>> energyDep_y;
-        vector<vector<vector<GRBVar>>> energyArr_y;
-        charge_y.reserve(numEB);
-        energyDep_y.reserve(numEB);
-        energyArr_y.reserve(numEB);
+    charge_bns.reserve(numEB);
+    energyDep_bns.reserve(numEB);
+    energyArr_bns.reserve(numEB);
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
+        vector<unordered_map<int, GRBVar>> charge_b;
+        vector<vector<GRBVar>> energyDep_b;
+        vector<vector<GRBVar>> energyArr_b;
+        charge_b.reserve(numEBTrip);
+        energyDep_b.reserve(numEBTrip);
+        energyArr_b.reserve(numEBTrip);
 
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
-            vector<unordered_map<int, GRBVar>> charge_yb;
-            vector<vector<GRBVar>> energyDep_yb;
-            vector<vector<GRBVar>> energyArr_yb;
-            charge_yb.reserve(numEBTrip);
-            energyDep_yb.reserve(numEBTrip);
-            energyArr_yb.reserve(numEBTrip);
+        for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+            int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
+            unordered_map<int, GRBVar> charge_bn;
+            vector<GRBVar> energyDep_bn;
+            vector<GRBVar> energyArr_bn;
+            energyDep_bn.reserve(numEBTripStations);
+            energyArr_bn.reserve(numEBTripStations);
 
-            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
-                unordered_map<int, GRBVar> charge_ybn;
-                vector<GRBVar> energyDep_ybn;
-                vector<GRBVar> energyArr_ybn;
-                energyDep_ybn.reserve(numEBTripStations);
-                energyArr_ybn.reserve(numEBTripStations);
-
-                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                    int station = schedulingCfg.stationTrips[trip][stationIdx];
-                    string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) +
-                                 "_s" + to_string(station) + "_i" + to_string(stationIdx);
-                    energyDep_ybn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "e_Dep" + sub));
-                    energyArr_ybn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "e_Arr" + sub));
-                    charge_ybn[station] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
-                }
-                charge_yb.push_back(charge_ybn);
-                energyDep_yb.push_back(energyDep_ybn);
-                energyArr_yb.push_back(energyArr_ybn);
+            for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                int station = schedulingCfg.stationTrips[trip][stationIdx];
+                string sub = "_b" + to_string(eb) + "_n" + to_string(trip) +
+                             "_s" + to_string(station) + "_i" + to_string(stationIdx);
+                energyDep_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "e_Dep" + sub));
+                energyArr_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "e_Arr" + sub));
+                charge_bn[station] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
             }
-            charge_y.push_back(charge_yb);
-            energyDep_y.push_back(energyDep_yb);
-            energyArr_y.push_back(energyArr_yb);
+            charge_b.push_back(charge_bn);
+            energyDep_b.push_back(energyDep_bn);
+            energyArr_b.push_back(energyArr_bn);
         }
-        charge_ybns.push_back(charge_y);
-        energyDep_ybns.push_back(energyDep_y);
-        energyArr_ybns.push_back(energyArr_y);
+        charge_bns.push_back(charge_b);
+        energyDep_bns.push_back(energyDep_b);
+        energyArr_bns.push_back(energyArr_b);
     }
 
-    for (int year = 0; year < batteryLifespan; year++) {
-        vector<vector<unordered_map<int, unordered_map<int, GRBVar>>>> charge_y;
-        charge_y.reserve(numEB);
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
-            vector<unordered_map<int, unordered_map<int, GRBVar>>> charge_yb;
-            charge_yb.reserve(numEBTrip);
-            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
-                unordered_map<int, unordered_map<int, GRBVar>> charge_ybn;
-                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                    int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
-                    int tripArr;
-                    int stationArr;
-                    int stationArrIdx;
-                    if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
-                        if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
-                            continue;
-                        }
-                        tripArr = schedulingCfg.tripEBs[ebIdx][tripIdx + 1];
-                        stationArrIdx = 0;
-                        stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
-                    } else {
-                        tripArr = tripDep;
-                        stationArrIdx = stationIdx + 1;
-                        stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
-                    }
-
-                    string sub = "_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(tripDep) +
-                                 "_s" + to_string(stationDep) + "_i" + to_string(stationIdx) + "To_n" +
-                                 to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
-                    charge_ybn[stationDep][stationArr] =
-                        model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
-                }
-                charge_yb.push_back(charge_ybn);
-            }
-            charge_y.push_back(charge_yb);
-        }
-        charge_ybnl.push_back(charge_y);
-    }
-
-    for (int year = 0; year < batteryLifespan; year++) {
-        unordered_map<int, unordered_map<int, unordered_map<int, unordered_map<int, GRBVar>>>> x_y;
-        for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
-            int eb = schedulingCfg.EBs[ebIdx];
-            size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
-            for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
-                int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
-                size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
-                for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
-                    int station = schedulingCfg.stationTrips[trip][stationIdx];
-                    if (!networkCfg.chargerPhys.count(station)) {
+    charge_bnl.reserve(numEB);
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
+        vector<unordered_map<int, unordered_map<int, GRBVar>>> charge_b;
+        charge_b.reserve(numEBTrip);
+        for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+            int tripDep = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            size_t numEBTripStations = schedulingCfg.stationTrips[tripDep].size();
+            unordered_map<int, unordered_map<int, GRBVar>> charge_bn;
+            for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                int stationDep = schedulingCfg.stationTrips[tripDep][stationIdx];
+                int tripArr;
+                int stationArr;
+                int stationArrIdx;
+                if (stationIdx == schedulingCfg.stationTrips[tripDep].size() - 1) {
+                    if (tripIdx == schedulingCfg.tripEBs[ebIdx].size() - 1) {
                         continue;
                     }
-                    int arrTime = schedulingCfg.stationArrTimes[trip][stationIdx];
-                    int depTime = schedulingCfg.stationDepTimes[trip][stationIdx];
-                    for (int time = arrTime; time < depTime; time++) {
-                        string varName = "x_y" + to_string(year) + "_b" + to_string(eb) + "_n" + to_string(trip) +
-                                         "_s" + to_string(station) + "_i" + to_string(stationIdx) + "_t" + to_string(time);
-                        x_y[eb][trip][station][time] = model.addVar(0, 1, 0, GRB_BINARY, varName);
-                    }
+                    tripArr = schedulingCfg.tripEBs[ebIdx][tripIdx + 1];
+                    stationArrIdx = 0;
+                    stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
+                } else {
+                    tripArr = tripDep;
+                    stationArrIdx = stationIdx + 1;
+                    stationArr = schedulingCfg.stationTrips[tripArr][stationArrIdx];
+                }
+
+                string sub = "_b" + to_string(eb) + "_n" + to_string(tripDep) +
+                             "_s" + to_string(stationDep) + "_i" + to_string(stationIdx) + "To_n" +
+                             to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
+                charge_bn[stationDep][stationArr] =
+                    model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
+            }
+            charge_b.push_back(charge_bn);
+        }
+        charge_bnl.push_back(charge_b);
+    }
+
+    for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
+        int eb = schedulingCfg.EBs[ebIdx];
+        size_t numEBTrip = schedulingCfg.tripEBs[ebIdx].size();
+        for (int tripIdx = 0; tripIdx < numEBTrip; tripIdx++) {
+            int trip = schedulingCfg.tripEBs[ebIdx][tripIdx];
+            size_t numEBTripStations = schedulingCfg.stationTrips[trip].size();
+            for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
+                int station = schedulingCfg.stationTrips[trip][stationIdx];
+                if (!networkCfg.chargerPhys.count(station)) {
+                    continue;
+                }
+                int arrTime = schedulingCfg.stationArrTimes[trip][stationIdx];
+                int depTime = schedulingCfg.stationDepTimes[trip][stationIdx];
+                for (int time = arrTime; time < depTime; time++) {
+                    string varName = "x_b" + to_string(eb) + "_n" + to_string(trip) +
+                                     "_s" + to_string(station) + "_i" + to_string(stationIdx) + "_t" + to_string(time);
+                    x_bns_t[eb][trip][station][time] = model.addVar(0, 1, 0, GRB_BINARY, varName);
                 }
             }
         }
-        x_ybns_t.push_back(x_y);
     }
 
     model.update();

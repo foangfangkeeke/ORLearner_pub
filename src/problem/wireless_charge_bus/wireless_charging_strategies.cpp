@@ -17,9 +17,9 @@ namespace fs = std::filesystem;
 
 #define OFFSET_OPERATION_CFG 0
 #define OFFSET_CHARGING_CFG (OFFSET_OPERATION_CFG + 3)
-#define OFFSET_NETWORK_CFG (OFFSET_CHARGING_CFG + 4)
-#define OFFSET_SCHEDULING_CFG (OFFSET_NETWORK_CFG + 2)
-#define OFFSET_CHARGER_CFG(numEB) (OFFSET_SCHEDULING_CFG + 3 + (numEB))
+#define OFFSET_SCENARIO_NETWORK_CFG 0
+#define OFFSET_SCENARIO_SCHEDULING_CFG (OFFSET_SCENARIO_NETWORK_CFG + 2)
+#define OFFSET_SCENARIO_CHARGER_CFG(numEB) (OFFSET_SCENARIO_SCHEDULING_CFG + 3 + (numEB))
 
 using linkTimeType = unordered_map<int, unordered_map<int, double>>;
 using stationTimeType = vector<vector<int>>;
@@ -175,6 +175,32 @@ static string MakeRouteBatteryCapacityVarName(int routeId)
     return "E_r" + to_string(routeId);
 }
 
+struct WirelessScenarioConfig {
+    string dataFolder;
+    double probability = 1.0;
+};
+
+static vector<WirelessScenarioConfig> LoadWirelessScenarioConfigs(const string& dataRootFolder)
+{
+    const fs::path scenarioCfgPath = ResolveDataFolderPath(dataRootFolder) / "scenarioCfg.txt";
+    auto rows = LoadStringTable(scenarioCfgPath);
+    if (!rows.has_value()) {
+        return {};
+    }
+
+    const int numScenarios = stoi(rows->at(0).at(0));
+    vector<WirelessScenarioConfig> scenarios;
+    scenarios.reserve(numScenarios);
+    for (int idx = 0; idx < numScenarios; ++idx) {
+        const auto& row = rows->at(static_cast<size_t>(idx + 1));
+        WirelessScenarioConfig scenario;
+        scenario.dataFolder = row.at(0);
+        scenario.probability = stod(row.at(1));
+        scenarios.push_back(scenario);
+    }
+    return scenarios;
+}
+
 } // namespace
 
 struct OperationCfg {
@@ -212,7 +238,7 @@ struct SchedulingCfg {
     vector<vector<int>> stationArrTimes;
     vector<vector<int>> stationDepTimes;
 
-    // Optional RouteCfg appended at the end of miscCfg.txt.
+    // RouteCfg is read from the active scenario's scenarioMiscCfg.txt.
     // routeIdByEBs is aligned with ebIdx / EBs ordering, not raw EB ids.
     int numRoutes = 1;
     vector<string> routeNames;
@@ -231,8 +257,14 @@ struct NetworkCfg {
 
 class ModelData {
 public:
-    ModelData(string dataFolder)
-        : dataFolder(std::move(dataFolder)), dataFolderPath(ResolveDataFolderPath(this->dataFolder)) {
+    ModelData(string dataRootFolder)
+        : ModelData(dataRootFolder, LoadWirelessScenarioConfigs(dataRootFolder).front()) {}
+
+    ModelData(string dataRootFolder, WirelessScenarioConfig scenarioConfig)
+        : dataRootFolder(std::move(dataRootFolder)),
+          dataRootFolderPath(ResolveDataFolderPath(this->dataRootFolder)),
+          scenarioConfig(std::move(scenarioConfig)),
+          scenarioFolderPath(dataRootFolderPath / fs::path(this->scenarioConfig.dataFolder)) {
         Init();
     }
     ~ModelData() = default;
@@ -251,7 +283,7 @@ public:
     }
 
     const fs::path& GetDataFolderPath() const {
-        return dataFolderPath;
+        return dataRootFolderPath;
     }
 
 private:
@@ -259,15 +291,23 @@ private:
     struct ChargerCfg chargerCfg;
     struct SchedulingCfg schedulingCfg;
     struct NetworkCfg networkCfg;
-    string dataFolder;
-    fs::path dataFolderPath;
+    string dataRootFolder;
+    fs::path dataRootFolderPath;
+    WirelessScenarioConfig scenarioConfig;
+    fs::path scenarioFolderPath;
 
-    fs::path Resolve(const string& file) const {
-        return dataFolderPath / file;
+    fs::path ResolveRoot(const string& file) const {
+        return dataRootFolderPath / file;
+    }
+
+    fs::path ResolveScenario(const string& file) const {
+        return scenarioFolderPath / file;
     }
 
     void Init() {
-        LoadConfigFromTxt();
+        LoadGlobalConfigFromTxt();
+        LoadScenarioOperationalTables();
+        LoadScenarioConfigFromTxt();
 
         for (const auto& stationTrip : schedulingCfg.stationTrips) {
             for (int station : stationTrip) {
@@ -276,11 +316,11 @@ private:
         }
     }
 
-    bool LoadConfigFromTxt() {
-        auto tmpDis = LoadLinkDistance(Resolve("linkDistance.txt"));
-        auto tmpTripArrTimes = LoadIntTable(Resolve("tripArrTimes.txt"));
-        auto tmpTripDepTimes = LoadIntTable(Resolve("tripDepTimes.txt"));
-        auto tmpTripStations = LoadIntTable(Resolve("tripStations.txt"));
+    bool LoadScenarioOperationalTables() {
+        auto tmpDis = LoadLinkDistance(ResolveScenario("linkDistance.txt"));
+        auto tmpTripArrTimes = LoadIntTable(ResolveScenario("tripArrTimes.txt"));
+        auto tmpTripDepTimes = LoadIntTable(ResolveScenario("tripDepTimes.txt"));
+        auto tmpTripStations = LoadIntTable(ResolveScenario("tripStations.txt"));
         if (tmpDis.has_value()) {
             networkCfg.linkDistances = *tmpDis;
         }
@@ -294,11 +334,15 @@ private:
             schedulingCfg.stationTrips = *tmpTripStations;
         }
 
-        auto tmpMiscCfg = LoadStringTable(Resolve("miscCfg.txt"));
-        if (tmpMiscCfg.has_value()) {
-            vector<string> operationCfgDouble = tmpMiscCfg->at(OFFSET_OPERATION_CFG);
-            vector<string> operationCfgInt = tmpMiscCfg->at(OFFSET_OPERATION_CFG + 1);
-            vector<string> operationCfgBus = tmpMiscCfg->at(OFFSET_OPERATION_CFG + 2);
+        return true;
+    }
+
+    bool LoadGlobalConfigFromTxt() {
+        auto tmpGlobalCfg = LoadStringTable(ResolveRoot("globalCfg.txt"));
+        if (tmpGlobalCfg.has_value()) {
+            vector<string> operationCfgDouble = tmpGlobalCfg->at(OFFSET_OPERATION_CFG);
+            vector<string> operationCfgInt = tmpGlobalCfg->at(OFFSET_OPERATION_CFG + 1);
+            vector<string> operationCfgBus = tmpGlobalCfg->at(OFFSET_OPERATION_CFG + 2);
             operationCfg.priceOfPowerDay = stod(operationCfgDouble[0]);
             operationCfg.priceOfPowerNight = stod(operationCfgDouble[1]);
             operationCfg.priceOfUnitBat = stod(operationCfgDouble[2]);
@@ -313,10 +357,10 @@ private:
             operationCfg.mu = stod(operationCfgBus[2]);
             operationCfg.g = stod(operationCfgBus[3]);
 
-            vector<string> chargerCfgNum = tmpMiscCfg->at(OFFSET_CHARGING_CFG);
-            vector<string> chargerCfgRate = tmpMiscCfg->at(OFFSET_CHARGING_CFG + 1);
-            vector<string> chargerCfgEfficiency = tmpMiscCfg->at(OFFSET_CHARGING_CFG + 2);
-            vector<string> chargerCfgInt = tmpMiscCfg->at(OFFSET_CHARGING_CFG + 3);
+            vector<string> chargerCfgNum = tmpGlobalCfg->at(OFFSET_CHARGING_CFG);
+            vector<string> chargerCfgRate = tmpGlobalCfg->at(OFFSET_CHARGING_CFG + 1);
+            vector<string> chargerCfgEfficiency = tmpGlobalCfg->at(OFFSET_CHARGING_CFG + 2);
+            vector<string> chargerCfgInt = tmpGlobalCfg->at(OFFSET_CHARGING_CFG + 3);
             chargerCfg.num = stoi(chargerCfgNum[0]);
             for (int i = 0; i < chargerCfg.num; i++) {
                 chargerCfg.chargeRate.push_back(stod(chargerCfgRate[i]));
@@ -324,16 +368,28 @@ private:
                 chargerCfg.priceOfUnitCharger.push_back(stoi(chargerCfgInt[i]));
             }
             chargerCfg.priceOfInverterPerkW = stod(chargerCfgInt[chargerCfg.num]);
+        }
 
-            vector<string> schedulingCfgNum = tmpMiscCfg->at(OFFSET_SCHEDULING_CFG);
-            vector<string> schedulingCfgEBs = tmpMiscCfg->at(OFFSET_SCHEDULING_CFG + 1);
-            vector<string> schedulingCfgTripNumEBs = tmpMiscCfg->at(OFFSET_SCHEDULING_CFG + 2);
+        return true;
+    }
+
+    bool LoadScenarioConfigFromTxt() {
+        auto tmpScenarioCfg = LoadStringTable(ResolveScenario("scenarioMiscCfg.txt"));
+        if (tmpScenarioCfg.has_value()) {
+            vector<string> networkCfgStart = tmpScenarioCfg->at(OFFSET_SCENARIO_NETWORK_CFG);
+            vector<string> networkCfgEnd = tmpScenarioCfg->at(OFFSET_SCENARIO_NETWORK_CFG + 1);
+
+            vector<string> schedulingCfgNum = tmpScenarioCfg->at(OFFSET_SCENARIO_SCHEDULING_CFG);
+            vector<string> schedulingCfgEBs = tmpScenarioCfg->at(OFFSET_SCENARIO_SCHEDULING_CFG + 1);
+            vector<string> schedulingCfgTripNumEBs = tmpScenarioCfg->at(OFFSET_SCENARIO_SCHEDULING_CFG + 2);
             schedulingCfg.numEB = stoi(schedulingCfgNum[0]);
             for (int i = 0; i < schedulingCfg.numEB; i++) {
+                networkCfg.startDistanceEBs.push_back(stod(networkCfgStart[i]));
+                networkCfg.endDistanceEBs.push_back(stod(networkCfgEnd[i]));
                 schedulingCfg.EBs.push_back(stoi(schedulingCfgEBs[i]));
                 schedulingCfg.tripNumEBs.push_back(stoi(schedulingCfgTripNumEBs[i]));
                 schedulingCfg.numTrip += stoi(schedulingCfgTripNumEBs[i]);
-                vector<string> schedulingCfgTrips = tmpMiscCfg->at(OFFSET_SCHEDULING_CFG + 3 + i);
+                vector<string> schedulingCfgTrips = tmpScenarioCfg->at(OFFSET_SCENARIO_SCHEDULING_CFG + 3 + i);
                 vector<int> tmp;
                 for (int j = 0; j < schedulingCfg.tripNumEBs[i]; j++) {
                     tmp.push_back(stoi(schedulingCfgTrips[j]));
@@ -341,27 +397,20 @@ private:
                 schedulingCfg.tripEBs.push_back(tmp);
             }
 
-            vector<string> networkCfgStart = tmpMiscCfg->at(OFFSET_NETWORK_CFG);
-            vector<string> networkCfgEnd = tmpMiscCfg->at(OFFSET_NETWORK_CFG + 1);
-            for (int i = 0; i < schedulingCfg.numEB; i++) {
-                networkCfg.startDistanceEBs.push_back(stod(networkCfgStart[i]));
-                networkCfg.endDistanceEBs.push_back(stod(networkCfgEnd[i]));
-            }
-
-            vector<string> chargeCfgNums = tmpMiscCfg->at(OFFSET_CHARGER_CFG(schedulingCfg.numEB));
+            vector<string> chargeCfgNums = tmpScenarioCfg->at(OFFSET_SCENARIO_CHARGER_CFG(schedulingCfg.numEB));
             networkCfg.chargeStationNum = stoi(chargeCfgNums[0]);
             for (int i = 0; i < networkCfg.chargeStationNum; i++) {
-                vector<string> chargerCfgNums = tmpMiscCfg->at(OFFSET_CHARGER_CFG(schedulingCfg.numEB) + 1 + i);
+                vector<string> chargerCfgNums = tmpScenarioCfg->at(OFFSET_SCENARIO_CHARGER_CFG(schedulingCfg.numEB) + 1 + i);
                 networkCfg.chargerNums[stoi(chargerCfgNums[0])] = stoi(chargerCfgNums[1]);
                 networkCfg.chargerPhys.insert(stoi(chargerCfgNums[0]));
             }
 
             const size_t routeCfgOffset = static_cast<size_t>(
-                OFFSET_CHARGER_CFG(schedulingCfg.numEB) + 1 + networkCfg.chargeStationNum);
-            schedulingCfg.numRoutes = stoi(tmpMiscCfg->at(routeCfgOffset)[0]);
-            schedulingCfg.routeNames = tmpMiscCfg->at(routeCfgOffset + 1);
+                OFFSET_SCENARIO_CHARGER_CFG(schedulingCfg.numEB) + 1 + networkCfg.chargeStationNum);
+            schedulingCfg.numRoutes = stoi(tmpScenarioCfg->at(routeCfgOffset)[0]);
+            schedulingCfg.routeNames = tmpScenarioCfg->at(routeCfgOffset + 1);
 
-            const auto& routeIdTokens = tmpMiscCfg->at(routeCfgOffset + 2);
+            const auto& routeIdTokens = tmpScenarioCfg->at(routeCfgOffset + 2);
             schedulingCfg.routeIdByEBs.reserve(routeIdTokens.size());
             for (const auto& token : routeIdTokens) {
                 schedulingCfg.routeIdByEBs.push_back(stoi(token));
@@ -434,18 +483,34 @@ static vector<ProblemDataVar> BuildWirelessMasterVars(const ModelData& data)
 
     return masterVars;
 }
+
+static void PrintWirelessScenarioSummary(const vector<WirelessScenarioConfig>& scenarios)
+{
+    std::cout << "scenario_count=" << scenarios.size() << std::endl;
+    for (size_t idx = 0; idx < scenarios.size(); ++idx) {
+        std::cout << "scenario_" << idx
+                  << " probability=" << scenarios[idx].probability
+                  << " folder=" << scenarios[idx].dataFolder << std::endl;
+    }
+}
+
 static void InitWirelessMasterData(ProblemData& data, const string& dataFolder, const string& usageLabel)
 {
-    ModelData modelData(dataFolder);
+    vector<WirelessScenarioConfig> scenarios = LoadWirelessScenarioConfigs(dataFolder);
+    // Current stage keeps a single scenario. Future multi-scenario runs should keep
+    // first-stage facility candidates consistent across scenarios, or build them from
+    // a shared global candidate set.
+    ModelData modelData(dataFolder, scenarios.front());
     vector<ProblemDataVar> masterVars = BuildWirelessMasterVars(modelData);
 
     data.addData("masterVars", masterVars);
-    data.addData("wireless_data_folder", dataFolder);
-    data.addData("wireless_scenario_count", 1);
+    data.addData("wireless_data_root_folder", dataFolder);
+    data.addData("wireless_scenarios", scenarios);
+    data.addData("wireless_scenario_count", static_cast<int>(scenarios.size()));
 
     std::cout << "Loaded wireless charging data for " << usageLabel << "." << std::endl;
-    std::cout << "scenarios=1"
-              << ", masterVars=" << masterVars.size() << std::endl;
+    PrintWirelessScenarioSummary(scenarios);
+    std::cout << "masterVars=" << masterVars.size() << std::endl;
 }
 
 static std::vector<ProblemDataConstr> BuildWirelessMasterConstrs(const ProblemData& data)
@@ -1049,11 +1114,11 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     return true;
 }
 
-static bool BuildWirelessOperationalSubproblem(const string& dataFolder,
+static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, const WirelessScenarioConfig& scenario,
     const vector<ProblemDataVar>& masterVars, GRBModel& model,
     IntegerLShapedSubProblemContext& context, const WirelessGurobiOptions& options)
 {
-    ModelData data(dataFolder);
+    ModelData data(dataRootFolder, scenario);
 
     OperationCfg operationCfg = data.GetOperationCfg();
     ChargerCfg chargerCfg = data.GetChargerCfg();
@@ -1568,7 +1633,7 @@ static bool BuildWirelessChargingSolverModel(const string& dataFolder, GRBModel&
 }
 
 static bool BuildWirelessChargingLShapedSubProblem(
-    const string& dataFolder, const vector<ProblemDataVar>& masterVars,
+    const string& dataRootFolder, const WirelessScenarioConfig& scenario, const vector<ProblemDataVar>& masterVars,
     GRBModel& subModel, IntegerLShapedSubProblemContext& context)
 {
     context.Clear();
@@ -1579,7 +1644,7 @@ static bool BuildWirelessChargingLShapedSubProblem(
     options.includeFirstStageObjective = false;
     options.configureSolverParameters = false;
 
-    if (!BuildWirelessOperationalSubproblem(dataFolder, masterVars, subModel, context, options)) {
+    if (!BuildWirelessOperationalSubproblem(dataRootFolder, scenario, masterVars, subModel, context, options)) {
         return false;
     }
 
@@ -1601,6 +1666,7 @@ WirelessChargingDataInitializationStrategy_Solver::WirelessChargingDataInitializ
 Status WirelessChargingDataInitializationStrategy_Solver::DataInit(GRBModel& model)
 {
     std::cout << "Loaded wireless charging data from file." << std::endl;
+    PrintWirelessScenarioSummary(LoadWirelessScenarioConfigs(dataFolder));
 
     bool built = BuildWirelessChargingSolverModel(dataFolder, model);
     return built ? OK : ERROR;
@@ -1635,10 +1701,11 @@ bool WirelessChargingDataInitializationStrategy_LShaped::IsWarmStartMasterFeasib
 void WirelessChargingSubProblemStrategy_LShaped::InitSubProblem(const ProblemData& problemData, GRBModel& subModel,
     IntegerLShapedSubProblemContext& context)
 {
-    const auto& dataFolder = problemData.getData<std::string>("wireless_data_folder");
+    const auto& dataRootFolder = problemData.getData<std::string>("wireless_data_root_folder");
+    const auto& scenarios = problemData.getData<std::vector<WirelessScenarioConfig>>("wireless_scenarios");
     const auto& masterVars = problemData.getData<std::vector<ProblemDataVar>>("masterVars");
 
-    bool built = BuildWirelessChargingLShapedSubProblem(dataFolder, masterVars, subModel, context);
+    bool built = BuildWirelessChargingLShapedSubProblem(dataRootFolder, scenarios.front(), masterVars, subModel, context);
     if (!built) {
         throw std::runtime_error("Failed to build wireless charging L-shaped sub-problem.");
     }

@@ -54,6 +54,5 @@ private:
     double qLowerBound = 0.0;
     bool lowerBoundCutAdded = false;
     std::unique_ptr<GRBModel> relaxedModel;
-    std::vector<GRBVar> relaxedMasterVars;
     std::vector<GRBConstr> relaxedFixConstrs;
 };

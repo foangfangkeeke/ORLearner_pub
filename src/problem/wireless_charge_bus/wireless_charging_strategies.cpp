@@ -108,7 +108,6 @@ static optional<linkTimeType> LoadLinkDistance(const fs::path& filePath) {
     return links;
 }
 
-constexpr const char* kWirelessVarGroupAllVars = "wireless_all_vars";
 constexpr double kWirelessEnergySlackPenalty = 1e6;
 constexpr const char* kWirelessFacilityRhsConstrGroup = "wireless_facility_rhs_constraints";
 constexpr const char* kWirelessFacilityRhsConstrPrefix = "wireless_facility_rhs_m";
@@ -134,6 +133,42 @@ static bool TryParseWirelessFacilityRhsMasterIndex(const string& constrName, siz
     return true;
 }
 
+static bool TryGetWirelessFacilityRhsMasterIndex(const GRBConstr& constr, size_t masterCount, size_t& masterIdx)
+{
+    const string constrName = constr.get(GRB_StringAttr_ConstrName);
+    return TryParseWirelessFacilityRhsMasterIndex(constrName, masterIdx) && masterIdx < masterCount;
+}
+
+static void SetWirelessFacilityRhsConstrs(vector<GRBConstr>& constrs, double rhs)
+{
+    for (auto& constr : constrs) {
+        constr.set(GRB_DoubleAttr_RHS, rhs);
+    }
+}
+
+static void SetWirelessFacilityRhsConstrs(vector<GRBConstr>& constrs, const vector<double>& zValues)
+{
+    for (auto& constr : constrs) {
+        size_t masterIdx = 0;
+        if (TryGetWirelessFacilityRhsMasterIndex(constr, zValues.size(), masterIdx)) {
+            constr.set(GRB_DoubleAttr_RHS, zValues[masterIdx]);
+        }
+    }
+}
+
+static void CollectWirelessFacilityRhsConstrs(GRBModel& model, vector<GRBConstr>& out)
+{
+    out.clear();
+    const int numConstrs = model.get(GRB_IntAttr_NumConstrs);
+    GRBConstr* constrs = model.getConstrs();
+    for (int idx = 0; idx < numConstrs; ++idx) {
+        size_t masterIdx = 0;
+        if (TryParseWirelessFacilityRhsMasterIndex(constrs[idx].get(GRB_StringAttr_ConstrName), masterIdx)) {
+            out.push_back(constrs[idx]);
+        }
+    }
+    delete[] constrs;
+}
 
 static string MakeRouteBatteryCapacityVarName(int routeId)
 {
@@ -347,7 +382,7 @@ static vector<int> CountEBsByRoute(const SchedulingCfg& schedulingCfg)
     return routeEBCounts;
 }
 
-static double CalcWirelessBatteryChoiceObjCoeffPerEB(const ModelData& data)
+static double CalcWirelessBatteryCostCoeffPerEB(const ModelData& data)
 {
     return data.GetOperationCfg().priceOfUnitBat;
 }
@@ -457,14 +492,11 @@ static Status BuildWirelessFarkasFeasibilityCut(GRBModel& relaxedModel,
 
         for (auto& constr : relaxedFixConstrs) {
             size_t masterIdx = 0;
-            const string constrName = constr.get(GRB_StringAttr_ConstrName);
-            if (!TryParseWirelessFacilityRhsMasterIndex(constrName, masterIdx) || masterIdx >= zValues.size()) {
-                continue;
+            if (TryGetWirelessFacilityRhsMasterIndex(constr, zValues.size(), masterIdx)) {
+                const double lambda = constr.get(GRB_DoubleAttr_FarkasDual);
+                cutInfo.yCoeffs[masterIdx] += lambda;
+                cutInfo.constant -= lambda * zValues[masterIdx];
             }
-
-            const double lambda = constr.get(GRB_DoubleAttr_FarkasDual);
-            cutInfo.yCoeffs[masterIdx] += lambda;
-            cutInfo.constant -= lambda * zValues[masterIdx];
         }
 
         return OK;
@@ -527,7 +559,6 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
         batteryCapacityByRoute.push_back(
             model.addVar(operationCfg.capacityMin, operationCfg.capacityMax, 0.0, GRB_CONTINUOUS, MakeRouteBatteryCapacityVarName(routeId)));
     }
-
 
     auto batteryCapacityForEB = [&](int ebIdx) -> GRBVar {
         const int routeId = schedulingCfg.routeIdByEBs.at(static_cast<size_t>(ebIdx));
@@ -746,7 +777,7 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
     obj += kWirelessEnergySlackPenalty * sum_energy_shortage;
 
     const vector<int> routeEBCounts = CountEBsByRoute(schedulingCfg);
-    const double batteryCostPerUnitCapacityPerEB = CalcWirelessBatteryChoiceObjCoeffPerEB(data);
+    const double batteryCostPerUnitCapacityPerEB = CalcWirelessBatteryCostCoeffPerEB(data);
     for (int routeId = 0; routeId < schedulingCfg.numRoutes; ++routeId) {
         const double routeBatteryCostCoeff =
             static_cast<double>(routeEBCounts.at(static_cast<size_t>(routeId))) *
@@ -1059,7 +1090,6 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder,
             model.addVar(operationCfg.capacityMin, operationCfg.capacityMax, 0.0, GRB_CONTINUOUS, MakeRouteBatteryCapacityVarName(routeId)));
     }
 
-
     auto batteryCapacityForEB = [&](int ebIdx) -> GRBVar {
         const int routeId = schedulingCfg.routeIdByEBs.at(static_cast<size_t>(ebIdx));
         return batteryCapacityByRoute.at(static_cast<size_t>(routeId));
@@ -1160,7 +1190,6 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder,
         }
     }
 
-
     // dynamic wireless charging
     charge_bnl.reserve(numEB);
     for (int ebIdx = 0; ebIdx < numEB; ebIdx++) {
@@ -1198,7 +1227,6 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder,
         }
         charge_bnl.push_back(charge_b);
     }
-
 
     model.update();
 
@@ -1261,14 +1289,13 @@ static bool BuildWirelessOperationalSubproblem(const string& dataFolder,
     obj += kWirelessEnergySlackPenalty * sum_energy_shortage;
 
     const vector<int> routeEBCounts = CountEBsByRoute(schedulingCfg);
-    const double batteryCostPerUnitCapacityPerEB = CalcWirelessBatteryChoiceObjCoeffPerEB(data);
+    const double batteryCostPerUnitCapacityPerEB = CalcWirelessBatteryCostCoeffPerEB(data);
     for (int routeId = 0; routeId < schedulingCfg.numRoutes; ++routeId) {
         const double routeBatteryCostCoeff =
             static_cast<double>(routeEBCounts.at(static_cast<size_t>(routeId))) *
             batteryCostPerUnitCapacityPerEB;
         obj += routeBatteryCostCoeff * batteryCapacityByRoute.at(static_cast<size_t>(routeId));
     }
-
 
     // energy range
     const double socMax = operationCfg.socMax;
@@ -1620,11 +1647,8 @@ void WirelessChargingSubProblemStrategy_LShaped::InitSubProblem(const ProblemDat
     qLowerBound = 0.0;
     lowerBoundCutAdded = false;
 
-    // Global recourse lower bound: temporarily allow all candidate wireless facilities.
     auto& facilityRhsConstrs = context.EnsureConstrGroup(kWirelessFacilityRhsConstrGroup);
-    for (auto& constr : facilityRhsConstrs) {
-        constr.set(GRB_DoubleAttr_RHS, 1.0);
-    }
+    SetWirelessFacilityRhsConstrs(facilityRhsConstrs, 1.0);
     subModel.update();
     subModel.optimize();
     int lbStatus = subModel.get(GRB_IntAttr_Status);
@@ -1636,9 +1660,7 @@ void WirelessChargingSubProblemStrategy_LShaped::InitSubProblem(const ProblemDat
                   << lbStatus << ". fallback lower bound = 0." << std::endl;
     }
 
-    for (auto& constr : facilityRhsConstrs) {
-        constr.set(GRB_DoubleAttr_RHS, 0.0);
-    }
+    SetWirelessFacilityRhsConstrs(facilityRhsConstrs, 0.0);
     subModel.update();
 
     InitRelaxedSubProblem(problemData, subModel);
@@ -1653,14 +1675,7 @@ void WirelessChargingSubProblemStrategy_LShaped::UpdateSubProblem(const ProblemD
     }
 
     auto& facilityRhsConstrs = context.EnsureConstrGroup(kWirelessFacilityRhsConstrGroup);
-    for (auto& constr : facilityRhsConstrs) {
-        size_t masterIdx = 0;
-        const string constrName = constr.get(GRB_StringAttr_ConstrName);
-        if (!TryParseWirelessFacilityRhsMasterIndex(constrName, masterIdx) || masterIdx >= zValues.size()) {
-            continue;
-        }
-        constr.set(GRB_DoubleAttr_RHS, zValues[masterIdx]);
-    }
+    SetWirelessFacilityRhsConstrs(facilityRhsConstrs, zValues);
 
     subModel.update();
 }
@@ -1677,19 +1692,8 @@ void WirelessChargingSubProblemStrategy_LShaped::InitRelaxedSubProblem(
     relaxedModel->set(GRB_IntParam_Method, 2);
     relaxedModel->set(GRB_IntParam_Crossover, 0);
 
-    relaxedMasterVars.clear();
     relaxedFixConstrs.clear();
-
-    const int numConstrs = relaxedModel->get(GRB_IntAttr_NumConstrs);
-    GRBConstr* constrs = relaxedModel->getConstrs();
-    for (int idx = 0; idx < numConstrs; ++idx) {
-        size_t masterIdx = 0;
-        const string constrName = constrs[idx].get(GRB_StringAttr_ConstrName);
-        if (TryParseWirelessFacilityRhsMasterIndex(constrName, masterIdx)) {
-            relaxedFixConstrs.push_back(constrs[idx]);
-        }
-    }
-    delete[] constrs;
+    CollectWirelessFacilityRhsConstrs(*relaxedModel, relaxedFixConstrs);
 
     relaxedModel->update();
 }
@@ -1705,14 +1709,7 @@ Status WirelessChargingSubProblemStrategy_LShaped::SolveRelaxedModel(
             return ERROR;
         }
 
-        for (auto& constr : relaxedFixConstrs) {
-            size_t masterIdx = 0;
-            const string constrName = constr.get(GRB_StringAttr_ConstrName);
-            if (!TryParseWirelessFacilityRhsMasterIndex(constrName, masterIdx) || masterIdx >= zValues.size()) {
-                continue;
-            }
-            constr.set(GRB_DoubleAttr_RHS, zValues[masterIdx]);
-        }
+        SetWirelessFacilityRhsConstrs(relaxedFixConstrs, zValues);
 
         relaxedModel->update();
         relaxedModel->optimize();
@@ -1729,14 +1726,11 @@ Status WirelessChargingSubProblemStrategy_LShaped::SolveRelaxedModel(
 
             for (auto& constr : relaxedFixConstrs) {
                 size_t masterIdx = 0;
-                const string constrName = constr.get(GRB_StringAttr_ConstrName);
-                if (!TryParseWirelessFacilityRhsMasterIndex(constrName, masterIdx) || masterIdx >= zValues.size()) {
-                    continue;
+                if (TryGetWirelessFacilityRhsMasterIndex(constr, zValues.size(), masterIdx)) {
+                    const double pi = constr.get(GRB_DoubleAttr_Pi);
+                    cutInfo.yCoeffs[masterIdx] += pi;
+                    cutInfo.constant -= pi * zValues[masterIdx];
                 }
-
-                const double pi = constr.get(GRB_DoubleAttr_Pi);
-                cutInfo.yCoeffs[masterIdx] += pi;
-                cutInfo.constant -= pi * zValues[masterIdx];
             }
             return OK;
         }
@@ -1824,4 +1818,3 @@ Status WirelessChargingSubProblemStrategy_LShaped::SolveRelaxedSubProblem(const 
     UpdateSubProblem(problemData, subModel, context, zValues);
     return SolveRelaxedModel(problemData, zValues, cutInfo, subObj);
 }
-

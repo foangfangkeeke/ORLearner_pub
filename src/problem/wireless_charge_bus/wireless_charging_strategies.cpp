@@ -1115,8 +1115,11 @@ static bool BuildWirelessChargingModelInternal(const string& dataFolder, GRBMode
 }
 
 static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, const WirelessScenarioConfig& scenario,
+    size_t scenarioIdx,
     const vector<ProblemDataVar>& masterVars, GRBModel& model,
-    IntegerLShapedSubProblemContext& context, const WirelessGurobiOptions& options)
+    IntegerLShapedSubProblemContext& context, const WirelessGurobiOptions& options,
+    GRBLinExpr& aggregateObj, size_t& facilityRhsSerial,
+    const unordered_map<string, GRBVar>* directMasterVarsByName = nullptr)
 {
     ModelData data(dataRootFolder, scenario);
 
@@ -1132,8 +1135,7 @@ static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, con
     }
 
     auto& facilityRhsConstrs = context.EnsureConstrGroup(kWirelessFacilityRhsConstrGroup);
-    facilityRhsConstrs.clear();
-    size_t facilityRhsSerial = 0;
+    const string namePrefix = "sc" + to_string(scenarioIdx) + "_";
 
     if (options.configureSolverParameters) {
         if (options.mipGap >= 0.0) {
@@ -1152,7 +1154,8 @@ static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, con
     batteryCapacityByRoute.reserve(static_cast<size_t>(schedulingCfg.numRoutes));
     for (int routeId = 0; routeId < schedulingCfg.numRoutes; ++routeId) {
         batteryCapacityByRoute.push_back(
-            model.addVar(operationCfg.capacityMin, operationCfg.capacityMax, 0.0, GRB_CONTINUOUS, MakeRouteBatteryCapacityVarName(routeId)));
+            model.addVar(operationCfg.capacityMin, operationCfg.capacityMax, 0.0, GRB_CONTINUOUS,
+                namePrefix + MakeRouteBatteryCapacityVarName(routeId)));
     }
 
     auto batteryCapacityForEB = [&](int ebIdx) -> GRBVar {
@@ -1174,9 +1177,9 @@ static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, con
     chargeNight_b.reserve(numEB);
     energyShortageArrEnd_b.reserve(numEB);
     for (int eb : schedulingCfg.EBs) {
-        string varName = "c_Night_b" + to_string(eb);
+        string varName = namePrefix + "c_Night_b" + to_string(eb);
         chargeNight_b.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, varName));
-        string shortageName = "e_ShortageArrEnd_b" + to_string(eb);
+        string shortageName = namePrefix + "e_ShortageArrEnd_b" + to_string(eb);
         energyShortageArrEnd_b.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, shortageName));
     }
 
@@ -1216,10 +1219,10 @@ static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, con
             for (int stationIdx = 0; stationIdx < numEBTripStations; stationIdx++) {
                 int station = schedulingCfg.stationTrips[trip][stationIdx];
                 string sub = "_b" + to_string(eb) + "_n" + to_string(trip) + "_s" + to_string(station) + "_i" + to_string(stationIdx);
-                energyDep_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "e_Dep" + sub));
-                energyArr_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "e_Arr" + sub));
-                energyShortageArr_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "e_ShortageArr" + sub));
-                charge_bn[station] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
+                energyDep_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, namePrefix + "e_Dep" + sub));
+                energyArr_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, namePrefix + "e_Arr" + sub));
+                energyShortageArr_bn.push_back(model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, namePrefix + "e_ShortageArr" + sub));
+                charge_bn[station] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, namePrefix + "c" + sub);
             }
             charge_b.push_back(charge_bn);
             energyDep_b.push_back(energyDep_bn);
@@ -1247,7 +1250,7 @@ static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, con
                 int arrTime = schedulingCfg.stationArrTimes[trip][stationIdx];
                 int depTime = schedulingCfg.stationDepTimes[trip][stationIdx];
                 for (int time = arrTime; time < depTime; time++) {
-                    string varName = "x_b" + to_string(eb) + "_n" + to_string(trip) +
+                    string varName = namePrefix + "x_b" + to_string(eb) + "_n" + to_string(trip) +
                                      "_s" + to_string(station) + "_i" + to_string(stationIdx) + "_t" + to_string(time);
                     x_bns_t[eb][trip][station][time] = model.addVar(0, 1, 0, GRB_BINARY, varName);
                 }
@@ -1286,7 +1289,7 @@ static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, con
 
                 string sub = "_b" + to_string(eb) + "_n" + to_string(tripDep) + "_s" + to_string(stationDep) +
                              "_i" + to_string(stationIdx) + "To_n" + to_string(tripArr) + "_s" + to_string(stationArr) + "_i" + to_string(stationArrIdx);
-                charge_bn[stationDep][stationArr] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, "c" + sub);
+                charge_bn[stationDep][stationArr] = model.addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, namePrefix + "c" + sub);
             }
             charge_b.push_back(charge_bn);
         }
@@ -1457,13 +1460,18 @@ static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, con
                 const int stayTime = schedulingCfg.stationDepTimes[trip][stationIdx] - schedulingCfg.stationArrTimes[trip][stationIdx];
                 const double chargeUpperBound = chargerCfg.chargeRate[1] * static_cast<double>(stayTime);
                 if (chargeUpperBound <= 0.0) {
-                    model.addConstr(charge <= 0.0, "constrChargeWirelessStationZero" + sub);
+                    model.addConstr(charge <= 0.0, namePrefix + "constrChargeWirelessStationZero" + sub);
                     continue;
                 }
 
-                GRBConstr rhsConstr = model.addConstr((1.0 / chargeUpperBound) * charge <= 0.0,
-                    MakeWirelessFacilityRhsConstrName(masterIdx, facilityRhsSerial++));
-                facilityRhsConstrs.push_back(rhsConstr);
+                if (directMasterVarsByName != nullptr) {
+                    model.addConstr(charge <= chargeUpperBound * directMasterVarsByName->at(masterVarName),
+                        namePrefix + "constrChargeWirelessStation" + sub);
+                } else {
+                    GRBConstr rhsConstr = model.addConstr((1.0 / chargeUpperBound) * charge <= 0.0,
+                        MakeWirelessFacilityRhsConstrName(masterIdx, facilityRhsSerial++));
+                    facilityRhsConstrs.push_back(rhsConstr);
+                }
             }
         }
     }
@@ -1502,13 +1510,18 @@ static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, con
                 int travelTime = timeArr - timeDep;
                 const double chargeUpperBound = chargerCfg.chargeRate[2] * static_cast<double>(travelTime);
                 if (chargeUpperBound <= 0.0) {
-                    model.addConstr(linkCharge <= 0.0, "constrChargeWirelessLinkZero" + subCharge);
+                    model.addConstr(linkCharge <= 0.0, namePrefix + "constrChargeWirelessLinkZero" + subCharge);
                     continue;
                 }
 
-                GRBConstr rhsConstr = model.addConstr((1.0 / chargeUpperBound) * linkCharge <= 0.0,
-                    MakeWirelessFacilityRhsConstrName(masterIdx, facilityRhsSerial++));
-                facilityRhsConstrs.push_back(rhsConstr);
+                if (directMasterVarsByName != nullptr) {
+                    model.addConstr(linkCharge <= chargeUpperBound * directMasterVarsByName->at(masterVarName),
+                        namePrefix + "constrChargeWirelessLink" + subCharge);
+                } else {
+                    GRBConstr rhsConstr = model.addConstr((1.0 / chargeUpperBound) * linkCharge <= 0.0,
+                        MakeWirelessFacilityRhsConstrName(masterIdx, facilityRhsSerial++));
+                    facilityRhsConstrs.push_back(rhsConstr);
+                }
             }
         }
     }
@@ -1618,7 +1631,7 @@ static bool BuildWirelessOperationalSubproblem(const string& dataRootFolder, con
                         "e_Overnight_b" + to_string(eb));
     }
 
-    model.setObjective(obj, GRB_MINIMIZE);
+    aggregateObj += scenario.probability * obj;
     model.update();
     return true;
 }
@@ -1629,14 +1642,52 @@ static bool BuildWirelessChargingSolverModel(const string& dataFolder, GRBModel&
     options.timeLimit = 18000.0;
     options.includeFirstStageObjective = true;
     options.configureSolverParameters = true;
-    return BuildWirelessChargingModelInternal(dataFolder, model, options);
+
+    const vector<WirelessScenarioConfig> scenarios = LoadWirelessScenarioConfigs(dataFolder);
+    ModelData masterData(dataFolder, scenarios.front());
+    const vector<ProblemDataVar> masterVars = BuildWirelessMasterVars(masterData);
+
+    if (options.configureSolverParameters) {
+        model.set(GRB_DoubleParam_TimeLimit, options.timeLimit);
+        model.set(GRB_IntParam_Presolve, 2);
+        model.set(GRB_IntParam_MIPFocus, 1);
+        model.set(GRB_DoubleParam_Heuristics, 0.5);
+        model.set(GRB_IntParam_Threads, 14);
+        model.set(GRB_IntParam_Method, 1);
+    }
+
+    GRBLinExpr obj = 0.0;
+    unordered_map<string, GRBVar> masterVarsByName;
+    masterVarsByName.reserve(masterVars.size());
+    for (const auto& varData : masterVars) {
+        GRBVar var = model.addVar(varData.lb, varData.ub, varData.obj, varData.type, varData.name);
+        masterVarsByName.emplace(varData.name, var);
+        obj += varData.obj * var;
+    }
+
+    IntegerLShapedSubProblemContext directContext;
+    size_t facilityRhsSerial = 0;
+    WirelessGurobiOptions scenarioOptions = options;
+    scenarioOptions.includeFirstStageObjective = false;
+    scenarioOptions.configureSolverParameters = false;
+    for (size_t scenarioIdx = 0; scenarioIdx < scenarios.size(); ++scenarioIdx) {
+        if (!BuildWirelessOperationalSubproblem(dataFolder, scenarios[scenarioIdx], scenarioIdx,
+                masterVars, model, directContext, scenarioOptions, obj, facilityRhsSerial, &masterVarsByName)) {
+            return false;
+        }
+    }
+
+    model.setObjective(obj, GRB_MINIMIZE);
+    model.update();
+    return true;
 }
 
 static bool BuildWirelessChargingLShapedSubProblem(
-    const string& dataRootFolder, const WirelessScenarioConfig& scenario, const vector<ProblemDataVar>& masterVars,
+    const string& dataRootFolder, const vector<WirelessScenarioConfig>& scenarios, const vector<ProblemDataVar>& masterVars,
     GRBModel& subModel, IntegerLShapedSubProblemContext& context)
 {
     context.Clear();
+    context.EnsureConstrGroup(kWirelessFacilityRhsConstrGroup).clear();
 
     WirelessGurobiOptions options;
     options.mipGap = 0.0;
@@ -1644,9 +1695,15 @@ static bool BuildWirelessChargingLShapedSubProblem(
     options.includeFirstStageObjective = false;
     options.configureSolverParameters = false;
 
-    if (!BuildWirelessOperationalSubproblem(dataRootFolder, scenario, masterVars, subModel, context, options)) {
-        return false;
+    GRBLinExpr obj = 0.0;
+    size_t facilityRhsSerial = 0;
+    for (size_t scenarioIdx = 0; scenarioIdx < scenarios.size(); ++scenarioIdx) {
+        if (!BuildWirelessOperationalSubproblem(dataRootFolder, scenarios[scenarioIdx], scenarioIdx,
+                masterVars, subModel, context, options, obj, facilityRhsSerial)) {
+            return false;
+        }
     }
+    subModel.setObjective(obj, GRB_MINIMIZE);
 
     subModel.set(GRB_IntParam_InfUnbdInfo, 1);
     subModel.set(GRB_IntParam_DualReductions, 0);
@@ -1705,7 +1762,7 @@ void WirelessChargingSubProblemStrategy_LShaped::InitSubProblem(const ProblemDat
     const auto& scenarios = problemData.getData<std::vector<WirelessScenarioConfig>>("wireless_scenarios");
     const auto& masterVars = problemData.getData<std::vector<ProblemDataVar>>("masterVars");
 
-    bool built = BuildWirelessChargingLShapedSubProblem(dataRootFolder, scenarios.front(), masterVars, subModel, context);
+    bool built = BuildWirelessChargingLShapedSubProblem(dataRootFolder, scenarios, masterVars, subModel, context);
     if (!built) {
         throw std::runtime_error("Failed to build wireless charging L-shaped sub-problem.");
     }

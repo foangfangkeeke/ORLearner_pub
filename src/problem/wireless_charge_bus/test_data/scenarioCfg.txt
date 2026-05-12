@@ -1,4 +1,5 @@
 # numScenarios
-1
+2
 # scenario_folder,probability
-scenarios/scenario_0,1.0
+scenario_0,0.3
+scenario_1,0.7

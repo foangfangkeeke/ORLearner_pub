@@ -3,6 +3,7 @@
 #include "milp_solver.hpp"
 #include "benders_decomposition.hpp"
 
+#include <chrono>
 #include <memory>
 #include <vector>
 #include <string>
@@ -94,4 +95,5 @@ private:
     double bestLowerBound;
     std::vector<double> incumbentZValues;
     double incumbentSecondStageValue;
+    std::chrono::steady_clock::time_point algorithmStart;
 };

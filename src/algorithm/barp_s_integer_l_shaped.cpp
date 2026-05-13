@@ -77,6 +77,8 @@ IntegerLShaped::IntegerLShaped(ProblemType problemType, std::string dataFolder, 
 
 Status IntegerLShaped::Initialize()
 {
+    algorithmStart = Tools::Clock::now();
+
     env = std::make_unique<GRBEnv>(true);
     env->set("LogFile", "gurobi_log.txt");
     env->set(GRB_IntParam_OutputFlag, 0);
@@ -122,13 +124,17 @@ Status IntegerLShaped::Initialize()
     if (integerStatus != OK) {
         return integerStatus;
     }
+    const auto warmStartEnd = Tools::Clock::now();
 
     globalLowerBound = warmIntegerValue;
     const bool warmMasterFeasible = dataIniter->IsWarmStartMasterFeasible(*problemData, warmStartZ, tolerance);
     if (warmMasterFeasible) {
         std::cout << "Warm start solution is feasible for the master problem with objective value: " << warmIntegerValue
-                  << std::endl;
+                  << ", elapsed_ms=" << Tools::ElapsedMs(algorithmStart, warmStartEnd) << std::endl;
         UpdateIncumbent(warmStartZ, warmIntegerValue);
+    } else {
+        std::cout << "Warm start solution is not feasible for the master problem"
+                  << ", elapsed_ms=" << Tools::ElapsedMs(algorithmStart, warmStartEnd) << std::endl;
     }
     model->addConstr(theta >= globalLowerBound, "theta_global_lb");
 
@@ -208,9 +214,8 @@ IntegerLShaped::CutEval IntegerLShaped::BuildContinuousCut(const IntegerLShapedC
 
 Status IntegerLShaped::Solve()
 {
-    const auto solveStart = Tools::Clock::now();
+    const auto solveStart = algorithmStart;
     for (int iter = 0; iter < maxIters; ++iter) {
-        const auto iterStart = Tools::Clock::now();
         model->optimize();
         int masterStatus = model->get(GRB_IntAttr_Status);
         if (!(masterStatus == GRB_OPTIMAL ||
@@ -247,7 +252,7 @@ Status IntegerLShaped::Solve()
             }
             model->update();
             const auto iterEnd = Tools::Clock::now();
-            std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
+            std::cout << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
             continue;
         }
         // Relaxed sub-problem feasible and can be cut.
@@ -264,7 +269,7 @@ Status IntegerLShaped::Solve()
             model->update();
             const auto iterEnd = Tools::Clock::now();
             std::cout << ", cut from relaxation"
-                      << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
+                      << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
             continue;
         }
 
@@ -289,7 +294,7 @@ Status IntegerLShaped::Solve()
 
             model->update();
             const auto iterEnd = Tools::Clock::now();
-            std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
+            std::cout << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
             continue;
         }
 
@@ -312,11 +317,11 @@ Status IntegerLShaped::Solve()
 
         if (thetaValue + tolerance >= aggregatedQValue) {
             const auto iterEnd = Tools::Clock::now();
-            std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
+            std::cout << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
             PrintBestSolution();
             std::cout << "Integer L-shaped converged." << std::endl;
             const auto solveEnd = Tools::Clock::now();
-            std::cout << "Integer L-shaped final solve time: " << Tools::ElapsedMs(solveStart, solveEnd) << " ms" << std::endl;
+            std::cout << "Integer L-shaped final elapsed time: " << Tools::ElapsedMs(solveStart, solveEnd) << " ms" << std::endl;
             return OK;
         }
 
@@ -324,10 +329,12 @@ Status IntegerLShaped::Solve()
         model->addConstr(cutPriority.expr <= theta, cutPriority.name);
         model->update();
         const auto iterEnd = Tools::Clock::now();
-        std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
+        std::cout << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
     }
 
-    std::cout << "Integer L-shaped reached max iterations: " << maxIters << std::endl;
+    const auto solveEnd = Tools::Clock::now();
+    std::cout << "Integer L-shaped reached max iterations: " << maxIters
+              << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, solveEnd) << std::endl;
     return ERROR;
 }
 

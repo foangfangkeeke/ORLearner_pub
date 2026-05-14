@@ -48,12 +48,14 @@ const std::string& RequireKey(
 
 BRSRawInput LoadBRSInput(const std::string& dataFolder)
 {
-    const std::filesystem::path dataPath =
-        std::filesystem::path(__FILE__).parent_path() / dataFolder / "brs_small_case.txt";
+    const std::filesystem::path basePath =
+        std::filesystem::path(__FILE__).parent_path() / dataFolder;
 
-    std::ifstream fin(dataPath);
+    const std::filesystem::path configPath = basePath / "globalCfg.txt";
+
+    std::ifstream fin(configPath);
     if (!fin.is_open()) {
-        throw std::runtime_error("Failed to open BRS data file: " + dataPath.string());
+        throw std::runtime_error("Failed to open BRS config file: " + configPath.string());
     }
 
     std::unordered_map<std::string, std::string> kv;
@@ -63,6 +65,7 @@ BRSRawInput LoadBRSInput(const std::string& dataFolder)
         if (commentPos != std::string::npos) {
             line = line.substr(0, commentPos);
         }
+
         line = Tools::Trim(line);
         if (line.empty()) {
             continue;
@@ -79,13 +82,10 @@ BRSRawInput LoadBRSInput(const std::string& dataFolder)
     }
 
     BRSRawInput input;
+
     input.stationCount = std::stoi(RequireKey(kv, "station_count"));
     input.horizon = std::stoi(RequireKey(kv, "time_horizon"));
     input.travelTimes = Tools::ParseIntList(RequireKey(kv, "travel_times"));
-    if (static_cast<int>(input.travelTimes.size()) != input.stationCount - 1) {
-        throw std::runtime_error("travel_times size must equal station_count - 1");
-    }
-
     input.existingTrains = Tools::ParseIntList(RequireKey(kv, "existing_trains"));
     input.storageFlags = Tools::ParseIntList(RequireKey(kv, "storage_flags"));
     input.brsCosts = Tools::ParseDoubleList(RequireKey(kv, "brs_costs"));
@@ -94,93 +94,115 @@ BRSRawInput LoadBRSInput(const std::string& dataFolder)
     input.minHeadway = std::stoi(RequireKey(kv, "min_headway"));
     input.lambdaCost = std::stod(RequireKey(kv, "lambda_cost"));
 
-    int scenarioCount = std::stoi(RequireKey(kv, "scenario_count"));
-    std::vector<double> probabilities = Tools::ParseDoubleList(RequireKey(kv, "scenario_probabilities"));
-    if (static_cast<int>(probabilities.size()) != scenarioCount) {
-        throw std::runtime_error("scenario_probabilities size does not match scenario_count");
-    }
+    const std::filesystem::path scenarioListPath = basePath / "scenarioCfg.txt";
 
-    input.scenarios.assign(static_cast<size_t>(scenarioCount), BRSScenarioData{});
-    for (int w = 0; w < scenarioCount; ++w) {
-        input.scenarios[static_cast<size_t>(w)].probability = probabilities[static_cast<size_t>(w)];
-        input.scenarios[static_cast<size_t>(w)].originDemand =
-            Tools::ParseDoubleList(RequireKey(kv, "scenario_b_" + std::to_string(w)));
-        input.scenarios[static_cast<size_t>(w)].destinationDemand =
-            Tools::ParseDoubleList(RequireKey(kv, "scenario_l_" + std::to_string(w)));
-    }
-
-    if (input.stationCount < 2) {
-        throw std::runtime_error("station_count must be at least 2");
-    }
-    if (input.horizon < 1) {
-        throw std::runtime_error("time_horizon must be >= 1");
-    }
-    if (static_cast<int>(input.existingTrains.size()) != input.stationCount) {
-        throw std::runtime_error("existing_trains size must equal station_count");
-    }
-    if (static_cast<int>(input.storageFlags.size()) != input.stationCount) {
-        throw std::runtime_error("storage_flags size must equal station_count");
-    }
-    if (static_cast<int>(input.brsCosts.size()) != input.stationCount) {
-        throw std::runtime_error("brs_costs size must equal station_count");
-    }
-    if (input.trainCapacity <= 0) {
-        throw std::runtime_error("train_capacity must be positive");
-    }
-    if (input.minHeadway < 0) {
-        throw std::runtime_error("min_headway must be >= 0");
-    }
-
-    for (int tt : input.travelTimes) {
-        if (tt <= 0) {
-            throw std::runtime_error("travel_time values must be positive");
-        }
-    }
-
-    for (int i = 0; i < input.stationCount; ++i) {
-        if (!(input.storageFlags[static_cast<size_t>(i)] == 0 ||
-              input.storageFlags[static_cast<size_t>(i)] == 1)) {
-            throw std::runtime_error("storage_flags must contain only 0/1");
-        }
+    std::ifstream sfin(scenarioListPath);
+    if (!sfin.is_open()) {
+        throw std::runtime_error("Failed to open scenarioCfg: " + scenarioListPath.string());
     }
 
     double totalProbability = 0.0;
-    for (const auto& scenario : input.scenarios) {
-        totalProbability += scenario.probability;
+
+    while (std::getline(sfin, line)) {
+        size_t commentPos = line.find('#');
+        if (commentPos != std::string::npos) {
+            line = line.substr(0, commentPos);
+        }
+
+        line = Tools::Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+
+        std::stringstream ss(line);
+
+        std::string scenarioFolder;
+        double probability;
+
+        ss >> scenarioFolder >> probability;
+
+        if (scenarioFolder.empty()) {
+            continue;
+        }
+
+        const std::filesystem::path scenarioPath =
+            basePath / scenarioFolder / "scenario.txt";
+
+        std::ifstream scfin(scenarioPath);
+        if (!scfin.is_open()) {
+            throw std::runtime_error(
+                "Failed to open scenario file: " + scenarioPath.string());
+        }
+
+        std::unordered_map<std::string, std::string> skv;
+
+        std::string sline;
+        while (std::getline(scfin, sline)) {
+            size_t cpos = sline.find('#');
+            if (cpos != std::string::npos) {
+                sline = sline.substr(0, cpos);
+            }
+
+            sline = Tools::Trim(sline);
+            if (sline.empty()) {
+                continue;
+            }
+
+            size_t eqPos = sline.find('=');
+            if (eqPos == std::string::npos) {
+                continue;
+            }
+
+            std::string key =
+                Tools::ToLower(Tools::Trim(sline.substr(0, eqPos)));
+            std::string value =
+                Tools::Trim(sline.substr(eqPos + 1));
+
+            skv[key] = value;
+        }
+
+        BRSScenarioData scenario;
+        scenario.probability = probability;
+
+        scenario.originDemand =
+            Tools::ParseDoubleList(RequireKey(skv, "origin_demand"));
+
+        scenario.destinationDemand =
+            Tools::ParseDoubleList(RequireKey(skv, "destination_demand"));
+
         if (static_cast<int>(scenario.originDemand.size()) != input.stationCount ||
             static_cast<int>(scenario.destinationDemand.size()) != input.stationCount) {
-            throw std::runtime_error("Scenario demand vectors must match station_count");
+            throw std::runtime_error(
+                "Scenario demand vector size must equal station_count");
         }
 
         double totalOrigin = std::accumulate(
             scenario.originDemand.begin(),
             scenario.originDemand.end(),
             0.0);
+
         double totalDestination = std::accumulate(
             scenario.destinationDemand.begin(),
             scenario.destinationDemand.end(),
             0.0);
+
         if (std::fabs(totalOrigin - totalDestination) > 1e-6) {
-            throw std::runtime_error("Each scenario must satisfy sum(B) == sum(L)");
+            throw std::runtime_error(
+                "Scenario must satisfy sum(origin_demand) == sum(destination_demand)");
         }
+
+        totalProbability += probability;
+
+        input.scenarios.push_back(std::move(scenario));
     }
 
     if (totalProbability <= 0.0) {
-        throw std::runtime_error("Sum of scenario probabilities must be positive");
+        throw std::runtime_error(
+            "Total scenario probability must be positive");
     }
 
     for (auto& scenario : input.scenarios) {
         scenario.probability /= totalProbability;
-    }
-
-    int storageCount = 0;
-    for (int flag : input.storageFlags) {
-        if (flag == 1) {
-            ++storageCount;
-        }
-    }
-    if (input.budget < 0 || input.budget > storageCount) {
-        throw std::runtime_error("budget must be within [0, number_of_storage_stations]");
     }
 
     return input;

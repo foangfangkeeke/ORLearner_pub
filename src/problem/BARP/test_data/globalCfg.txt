@@ -1,0 +1,22 @@
+# BARP-S case converted from brs_small_case.txt
+# Common configuration shared by all scenarios.
+
+station_count = 8
+time_horizon = 12
+
+# Directed arcs i -> i+1.
+travel_times = 2,2,2,3,2,2,2
+
+# Number of existing trains at t=0 for each station.
+existing_trains = 1,0,0,0,1,0,0,0
+
+# Whether station has a storage line that can host one BRS (0/1).
+storage_flags = 0,1,1,1,1,1,1,0
+
+# Cost of allocating a BRS to each station.
+brs_costs = 50,8,10,12,12,10,8,50
+budget = 3
+lambda_cost = 1.0
+
+train_capacity = 16
+min_headway = 1

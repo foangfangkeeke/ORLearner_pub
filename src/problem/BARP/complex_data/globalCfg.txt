@@ -1,0 +1,13 @@
+# BARP-S complex validation case
+# Common/global configuration shared by all scenarios.
+
+station_count = 12
+time_horizon = 18
+travel_times = 2,2,3,2,2,3,2,2,2,3,2
+existing_trains = 1,0,0,1,0,0,1,0,0,0,0,0
+storage_flags = 0,1,1,1,1,1,1,1,1,1,1,0
+brs_costs = 60,9,10,12,13,14,14,13,12,10,9,60
+budget = 5
+lambda_cost = 1.0
+train_capacity = 18
+min_headway = 2

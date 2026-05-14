@@ -1654,6 +1654,7 @@ static bool BuildWirelessChargingSolverModel(const string& dataFolder, GRBModel&
         model.set(GRB_DoubleParam_Heuristics, 0.5);
         model.set(GRB_IntParam_Threads, 14);
         model.set(GRB_IntParam_Method, 1);
+        model.set(GRB_DoubleParam_MIPGap, 0.0);
     }
 
     GRBLinExpr obj = 0.0;

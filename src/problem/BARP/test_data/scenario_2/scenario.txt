@@ -1,0 +1,6 @@
+# BARP-S scenario 2
+# B_i^w: origin passenger demand at t=0 for each station i.
+origin_demand = 15,9,8,7,8,6,5,0
+
+# L_i^w: destination passenger demand for each station i.
+destination_demand = 0,5,9,10,10,9,7,8

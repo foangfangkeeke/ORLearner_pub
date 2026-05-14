@@ -1,0 +1,3 @@
+# BARP-S scenario 0
+origin_demand = 16,14,12,10,9,8,7,6,5,4,3,0
+destination_demand = 0,4,7,8,10,10,11,11,10,9,8,6

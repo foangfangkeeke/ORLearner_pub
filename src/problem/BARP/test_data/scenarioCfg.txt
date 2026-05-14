@@ -1,0 +1,4 @@
+# scenario_folder probability
+scenario_0 0.30
+scenario_1 0.25
+scenario_2 0.45

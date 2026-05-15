@@ -124,7 +124,7 @@ private:
 
 class BendersDecomposition : public IMILPAlgorithmStrategy {
 public:
-    BendersDecomposition(ProblemType problemType, std::string dataFolder, int maxIters = 100, double tol = 1e-6);
+    BendersDecomposition(ProblemType problemType, std::string dataFolder, int maxIters = 500, double tol = 1e-6);
     Status Initialize() override;
     Status Solve() override;
     ~BendersDecomposition();

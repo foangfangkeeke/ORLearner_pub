@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <future>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -18,6 +19,12 @@
 namespace {
 using DataInitFactory = std::function<std::unique_ptr<IDataInitializationStrategy_IntegerLShaped>(const std::string&)>;
 using SubFactory = std::function<std::unique_ptr<ISubProblemStrategy_IntegerLShaped>()>;
+
+struct SubProblemEvalResult {
+    Status status = ERROR;
+    IntegerLShapedCutInfo cutInfo;
+    double subObj = 0.0;
+};
 
 static const std::map<ProblemType, std::tuple<DataInitFactory, SubFactory>> kStrategyMap = {
     {
@@ -38,12 +45,18 @@ static const std::map<ProblemType, std::tuple<DataInitFactory, SubFactory>> kStr
     }
 };
 
-Status EvaluateIntegerSubproblem(const ProblemData& problemData, ISubProblemStrategy_IntegerLShaped& strategy,
-    GRBModel& subModel, IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues,
-    IntegerLShapedCutInfo& cutInfo, double& subObj)
+SubProblemEvalResult EvaluateScenarioSubproblem(const ProblemData& problemData,
+    ISubProblemStrategy_IntegerLShaped& strategy, GRBModel& subModel,
+    IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues, bool relaxed)
 {
+    SubProblemEvalResult result;
     strategy.UpdateSubProblem(problemData, subModel, context, zValues);
-    return strategy.SolveSubProblem(problemData, subModel, context, zValues, cutInfo, subObj);
+    result.status = relaxed
+        ? strategy.SolveRelaxedSubProblem(problemData, subModel, context, zValues,
+              result.cutInfo, result.subObj)
+        : strategy.SolveSubProblem(problemData, subModel, context, zValues,
+              result.cutInfo, result.subObj);
+    return result;
 }
 
 void AddFeasibilityCut(GRBModel& model, const IntegerLShapedCutInfo& cutInfo,
@@ -67,6 +80,14 @@ void AddFeasibilityCut(GRBModel& model, const IntegerLShapedCutInfo& cutInfo,
     throw std::invalid_argument("Unsupported feasibility cut sense in integer L-shaped framework");
 }
 } // namespace
+
+struct IntegerLShaped::ScenarioSubProblem {
+    int scenarioIndex = 0;
+    std::unique_ptr<ISubProblemStrategy_IntegerLShaped> strategy;
+    std::unique_ptr<GRBEnv> env;
+    std::unique_ptr<GRBModel> model;
+    IntegerLShapedSubProblemContext context;
+};
 
 IntegerLShaped::IntegerLShaped(ProblemType problemType, std::string dataFolder, int maxIters, double tol)
     : problemType(problemType), dataFolder(dataFolder), maxIters(maxIters), tolerance(tol), globalLowerBound(0.0),
@@ -102,25 +123,31 @@ Status IntegerLShaped::Initialize()
     const auto& masterVars = problemData->getData<std::vector<ProblemDataVar>>("masterVars");
     InitializeBendersMasterModel(*model, masterVars, masterConstrs, zVars, theta, true);
 
-    subEnv = std::make_unique<GRBEnv>(true);
-    subEnv->set(GRB_IntParam_OutputFlag, 0);
-    subEnv->start();
-    subModel = std::make_unique<GRBModel>(*subEnv);
-    subContext.Clear();
-    subProblemStrategy->InitSubProblem(*problemData, *subModel, subContext);
+    subProblems.clear();
+    const int scenarioCount = subProblemStrategy->ScenarioCount(*problemData);
+    if (scenarioCount <= 0) {
+        throw std::runtime_error("Integer L-shaped requires at least one scenario sub-problem.");
+    }
+
+    subProblems.reserve(static_cast<size_t>(scenarioCount));
+    for (int scenarioIndex = 0; scenarioIndex < scenarioCount; ++scenarioIndex) {
+        auto sub = std::make_unique<ScenarioSubProblem>();
+        sub->scenarioIndex = scenarioIndex;
+        sub->strategy = subProblemStrategy->Clone();
+        sub->env = std::make_unique<GRBEnv>(true);
+        sub->env->set(GRB_IntParam_OutputFlag, 0);
+        sub->env->start();
+        sub->model = std::make_unique<GRBModel>(*sub->env);
+        sub->context.Clear();
+        sub->strategy->InitSubProblem(*problemData, scenarioIndex, *sub->model, sub->context);
+        subProblems.push_back(std::move(sub));
+    }
 
     const std::vector<double> warmStartZ = dataIniter->BuildWarmStartMasterValues(*problemData);
     IntegerLShapedCutInfo warmIntegerCutInfo;
 
     double warmIntegerValue = -1e9;
-    Status integerStatus = EvaluateIntegerSubproblem(
-        *problemData,
-        *subProblemStrategy,
-        *subModel,
-        subContext,
-        warmStartZ,
-        warmIntegerCutInfo,
-        warmIntegerValue);
+    Status integerStatus = EvaluateSubProblems(warmStartZ, false, warmIntegerCutInfo, warmIntegerValue);
     if (integerStatus != OK) {
         return integerStatus;
     }
@@ -212,6 +239,67 @@ IntegerLShaped::CutEval IntegerLShaped::BuildContinuousCut(const IntegerLShapedC
     return cut;
 }
 
+Status IntegerLShaped::EvaluateSubProblems(const std::vector<double>& zValues, bool relaxed,
+    IntegerLShapedCutInfo& cutInfo, double& subObj)
+{
+    if (subProblems.empty()) {
+        std::cerr << "Integer L-shaped sub-problems are not initialized" << std::endl;
+        return ERROR;
+    }
+
+    std::vector<std::future<SubProblemEvalResult>> futures;
+    futures.reserve(subProblems.size());
+    const ProblemData* problemDataPtr = problemData.get();
+    for (auto& sub : subProblems) { // TODO: parallel execution is not necessary and should be optional.
+        futures.push_back(std::async(std::launch::async, [problemDataPtr, &zValues, relaxed, sub = sub.get()] {
+            return EvaluateScenarioSubproblem(*problemDataPtr, *sub->strategy, *sub->model,
+                sub->context, zValues, relaxed);
+        }));
+    }
+
+    cutInfo = IntegerLShapedCutInfo{};
+    cutInfo.isOptimalityCut = true;
+    cutInfo.sense = '>';
+    cutInfo.rhs = 0.0;
+    cutInfo.yCoeffs.assign(zValues.size(), 0.0);
+    cutInfo.constant = 0.0;
+    subObj = 0.0;
+
+    for (auto& future : futures) {
+        SubProblemEvalResult result;
+        try {
+            result = future.get();
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Integer L-shaped sub-problem failed: " << e.what() << std::endl;
+            return ERROR;
+        }
+
+        if (result.status != OK) {
+            return result.status;
+        }
+
+        if (!result.cutInfo.isOptimalityCut) {
+            cutInfo = result.cutInfo;
+            subObj = result.subObj;
+            return OK;
+        }
+
+        if (result.cutInfo.yCoeffs.size() != zValues.size()) {
+            std::cerr << "Integer L-shaped cut size mismatch" << std::endl;
+            return ERROR;
+        }
+
+        subObj += result.subObj;
+        cutInfo.constant += result.cutInfo.constant;
+        for (size_t idx = 0; idx < zValues.size(); ++idx) {
+            cutInfo.yCoeffs[idx] += result.cutInfo.yCoeffs[idx];
+        }
+    }
+
+    return OK;
+}
+
 Status IntegerLShaped::Solve()
 {
     const auto solveStart = algorithmStart;
@@ -233,8 +321,7 @@ Status IntegerLShaped::Solve()
 
         double relaxedQValue = 0.0;
         IntegerLShapedCutInfo continuousCutInfo;
-        Status relaxedStatus = subProblemStrategy->SolveRelaxedSubProblem(*problemData, *subModel,
-            subContext, zValues, continuousCutInfo, relaxedQValue);
+        Status relaxedStatus = EvaluateSubProblems(zValues, true, continuousCutInfo, relaxedQValue);
         if (relaxedStatus != OK) { // Error in solving relaxed sub-problem
             std::cerr << "Relaxed sub-problem failed in iteration " << iter << std::endl;
             return ERROR;
@@ -275,8 +362,7 @@ Status IntegerLShaped::Solve()
 
         double aggregatedQValue = 0.0;
         IntegerLShapedCutInfo integerCutInfo;
-        Status secondStageStatus = EvaluateIntegerSubproblem(*problemData, *subProblemStrategy, *subModel,
-            subContext, zValues, integerCutInfo, aggregatedQValue);
+        Status secondStageStatus = EvaluateSubProblems(zValues, false, integerCutInfo, aggregatedQValue);
         if (secondStageStatus != OK) {
             std::cerr << "Integer L-shaped second-stage evaluation failed in iteration " << iter << std::endl;
             return ERROR;

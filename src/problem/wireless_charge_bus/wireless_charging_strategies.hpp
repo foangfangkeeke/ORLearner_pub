@@ -26,7 +26,9 @@ private:
 
 class WirelessChargingSubProblemStrategy_LShaped : public ISubProblemStrategy_IntegerLShaped {
 public:
-    void InitSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    int ScenarioCount(const ProblemData& problemData) const override;
+
+    void InitSubProblem(const ProblemData& problemData, int scenarioIndex, GRBModel& subModel,
         IntegerLShapedSubProblemContext& context) override;
 
     void UpdateSubProblem(const ProblemData& problemData, GRBModel& subModel,

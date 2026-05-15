@@ -1684,8 +1684,8 @@ static bool BuildWirelessChargingSolverModel(const string& dataFolder, GRBModel&
 }
 
 static bool BuildWirelessChargingLShapedSubProblem(
-    const string& dataRootFolder, const vector<WirelessScenarioConfig>& scenarios, const vector<ProblemDataVar>& masterVars,
-    GRBModel& subModel, IntegerLShapedSubProblemContext& context)
+    const string& dataRootFolder, const vector<WirelessScenarioConfig>& scenarios, size_t scenarioIdx,
+    const vector<ProblemDataVar>& masterVars, GRBModel& subModel, IntegerLShapedSubProblemContext& context)
 {
     context.Clear();
     context.EnsureConstrGroup(kWirelessFacilityRhsConstrGroup).clear();
@@ -1698,11 +1698,12 @@ static bool BuildWirelessChargingLShapedSubProblem(
 
     GRBLinExpr obj = 0.0;
     size_t facilityRhsSerial = 0;
-    for (size_t scenarioIdx = 0; scenarioIdx < scenarios.size(); ++scenarioIdx) {
-        if (!BuildWirelessOperationalSubproblem(dataRootFolder, scenarios[scenarioIdx], scenarioIdx,
-                masterVars, subModel, context, options, obj, facilityRhsSerial)) {
-            return false;
-        }
+    if (scenarioIdx >= scenarios.size()) {
+        return false;
+    }
+    if (!BuildWirelessOperationalSubproblem(dataRootFolder, scenarios[scenarioIdx], scenarioIdx,
+            masterVars, subModel, context, options, obj, facilityRhsSerial)) {
+        return false;
     }
     subModel.setObjective(obj, GRB_MINIMIZE);
 
@@ -1756,14 +1757,20 @@ bool WirelessChargingDataInitializationStrategy_LShaped::IsWarmStartMasterFeasib
     return true;
 }
 
-void WirelessChargingSubProblemStrategy_LShaped::InitSubProblem(const ProblemData& problemData, GRBModel& subModel,
-    IntegerLShapedSubProblemContext& context)
+int WirelessChargingSubProblemStrategy_LShaped::ScenarioCount(const ProblemData& problemData) const
+{
+    return static_cast<int>(problemData.getData<std::vector<WirelessScenarioConfig>>("wireless_scenarios").size());
+}
+
+void WirelessChargingSubProblemStrategy_LShaped::InitSubProblem(const ProblemData& problemData, int scenarioIndex,
+    GRBModel& subModel, IntegerLShapedSubProblemContext& context)
 {
     const auto& dataRootFolder = problemData.getData<std::string>("wireless_data_root_folder");
     const auto& scenarios = problemData.getData<std::vector<WirelessScenarioConfig>>("wireless_scenarios");
     const auto& masterVars = problemData.getData<std::vector<ProblemDataVar>>("masterVars");
 
-    bool built = BuildWirelessChargingLShapedSubProblem(dataRootFolder, scenarios, masterVars, subModel, context);
+    bool built = BuildWirelessChargingLShapedSubProblem(dataRootFolder, scenarios,
+        static_cast<size_t>(scenarioIndex), masterVars, subModel, context);
     if (!built) {
         throw std::runtime_error("Failed to build wireless charging L-shaped sub-problem.");
     }

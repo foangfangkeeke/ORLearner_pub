@@ -28,8 +28,11 @@ public:
 
 class ISubProblemStrategy_IntegerLShaped {
 public:
+    virtual int ScenarioCount(const ProblemData& problemData) const = 0;
+
     virtual void InitSubProblem(
-        const ProblemData& problemData, GRBModel& subModel, IntegerLShapedSubProblemContext& context) = 0;
+        const ProblemData& problemData, int scenarioIndex, GRBModel& subModel,
+        IntegerLShapedSubProblemContext& context) = 0;
 
     virtual void UpdateSubProblem(
         const ProblemData& problemData, GRBModel& subModel, IntegerLShapedSubProblemContext& context,
@@ -49,12 +52,14 @@ public:
 
 class IntegerLShaped : public IMILPAlgorithmStrategy {
 public:
-    IntegerLShaped(ProblemType problemType, std::string dataFolder = "test_data", int maxIters = 100, double tol = 1e-6);
+    IntegerLShaped(ProblemType problemType, std::string dataFolder = "test_data", int maxIters = 500, double tol = 1e-6);
     Status Initialize() override;
     Status Solve() override;
     ~IntegerLShaped() override;
 
 private:
+    struct ScenarioSubProblem;
+
     struct CutEval {
         GRBLinExpr expr = 0.0;
         double lhsAtCurrent = 0.0;
@@ -70,6 +75,9 @@ private:
     CutEval BuildContinuousCut(const IntegerLShapedCutInfo& cutInfo, const std::vector<double>& zCurrent,
         int iter) const;
 
+    Status EvaluateSubProblems(const std::vector<double>& zValues, bool relaxed,
+        IntegerLShapedCutInfo& cutInfo, double& subObj);
+
     void UpdateIncumbent(const std::vector<double>& zValues, double secondStageValue);
 
     void PrintBestSolution() const;
@@ -84,9 +92,7 @@ private:
     std::unique_ptr<ProblemData> problemData;
     std::unique_ptr<IDataInitializationStrategy_IntegerLShaped> dataIniter;
     std::unique_ptr<ISubProblemStrategy_IntegerLShaped> subProblemStrategy;
-    std::unique_ptr<GRBEnv> subEnv;
-    std::unique_ptr<GRBModel> subModel;
-    IntegerLShapedSubProblemContext subContext;
+    std::vector<std::unique_ptr<ScenarioSubProblem>> subProblems;
     std::vector<GRBVar> zVars;
     GRBVar theta;
 

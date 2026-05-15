@@ -225,31 +225,70 @@ void AppendTravelArcs(const BRSRawInput& input, std::vector<BRSArcData>& arcs)
     }
 }
 
-Status BuildBRSRelaxedOptimalityCut(const ProblemData& problemData, GRBModel& subModel,
-    const std::vector<double>& zValues, IntegerLShapedCutInfo& cutInfo, double& relaxedObjective)
+void SetBRSAssignmentRhs(const ProblemData& problemData, std::vector<GRBConstr>& assignmentConstrs,
+    const std::vector<double>& zValues)
+{
+    const int scenarioCount = static_cast<int>(
+        problemData.getData<std::vector<BRSScenarioData>>("brsScenarios").size());
+    const int storageCount = problemData.getData<int>("brsStorageCount");
+
+    if (zValues.size() != static_cast<size_t>(storageCount)) {
+        throw std::runtime_error("BRS assignment RHS update: z value size mismatch");
+    }
+    if (assignmentConstrs.size() != static_cast<size_t>(scenarioCount * storageCount)) {
+        throw std::runtime_error("BRS assignment RHS update: constraint count mismatch");
+    }
+
+    for (int w = 0; w < scenarioCount; ++w) {
+        for (int s = 0; s < storageCount; ++s) {
+            assignmentConstrs[static_cast<size_t>(w * storageCount + s)]
+                .set(GRB_DoubleAttr_RHS, zValues[static_cast<size_t>(s)]);
+        }
+    }
+}
+
+void CollectBRSAssignmentConstrs(const ProblemData& problemData, GRBModel& model,
+    std::vector<GRBConstr>& assignmentConstrs)
+{
+    const int scenarioCount = static_cast<int>(
+        problemData.getData<std::vector<BRSScenarioData>>("brsScenarios").size());
+    const int storageCount = problemData.getData<int>("brsStorageCount");
+
+    assignmentConstrs.clear();
+    assignmentConstrs.reserve(static_cast<size_t>(scenarioCount * storageCount));
+    for (int w = 0; w < scenarioCount; ++w) {
+        for (int s = 0; s < storageCount; ++s) {
+            const std::string constrName = "assign_w" + std::to_string(w) + "_s" + std::to_string(s);
+            assignmentConstrs.push_back(model.getConstrByName(constrName));
+        }
+    }
+}
+
+Status BuildBRSRelaxedOptimalityCut(const ProblemData& problemData, GRBModel& relaxedModel,
+    std::vector<GRBConstr>& assignmentConstrs, const std::vector<double>& zValues,
+    IntegerLShapedCutInfo& cutInfo, double& relaxedObjective)
 {
     try {
         const int storageCount = problemData.getData<int>("brsStorageCount");
         const int scenarioCount = static_cast<int>(
             problemData.getData<std::vector<BRSScenarioData>>("brsScenarios").size());
 
-        auto relaxed = std::make_unique<GRBModel>(subModel.relax());
-        relaxed->set(GRB_IntParam_OutputFlag, 0);
-        relaxed->optimize();
+        SetBRSAssignmentRhs(problemData, assignmentConstrs, zValues);
+        relaxedModel.update();
+        relaxedModel.optimize();
 
-        const int lpStatus = relaxed->get(GRB_IntAttr_Status);
+        const int lpStatus = relaxedModel.get(GRB_IntAttr_Status);
         if (lpStatus != GRB_OPTIMAL) {
             std::cerr << "BRS relaxed subproblem ended with status: " << lpStatus << std::endl;
             return ERROR;
         }
 
-        relaxedObjective = relaxed->get(GRB_DoubleAttr_ObjVal);
+        relaxedObjective = relaxedModel.get(GRB_DoubleAttr_ObjVal);
         cutInfo.yCoeffs.assign(static_cast<size_t>(storageCount), 0.0);
 
         for (int w = 0; w < scenarioCount; ++w) {
             for (int s = 0; s < storageCount; ++s) {
-                const std::string constrName = "assign_w" + std::to_string(w) + "_s" + std::to_string(s);
-                const GRBConstr assignConstr = relaxed->getConstrByName(constrName);
+                const GRBConstr& assignConstr = assignmentConstrs[static_cast<size_t>(w * storageCount + s)];
                 cutInfo.yCoeffs[static_cast<size_t>(s)] += assignConstr.get(GRB_DoubleAttr_Pi);
             }
         }
@@ -1091,29 +1130,53 @@ bool BRSDataInitializationStrategy_LShaped::IsWarmStartMasterFeasible(const Prob
     return openedCount <= static_cast<double>(budget) + tolerance;
 }
 
-void BRSSubProblemStrategy_LShaped::InitSubProblem(const ProblemData& problemData, GRBModel& subModel,
-    IntegerLShapedSubProblemContext& context)
+int BRSSubProblemStrategy_LShaped::ScenarioCount(const ProblemData& problemData) const
 {
-    bendersImpl.InitSubProblem(problemData, subModel, context);
+    return static_cast<int>(problemData.getData<std::vector<BRSScenarioData>>("brsScenarios").size());
+}
+
+void BRSSubProblemStrategy_LShaped::InitSubProblem(const ProblemData& problemData, int scenarioIndex,
+    GRBModel& subModel, IntegerLShapedSubProblemContext& context)
+{
+    const auto& scenarios = problemData.getData<std::vector<BRSScenarioData>>("brsScenarios");
+    if (scenarioIndex < 0 || scenarioIndex >= static_cast<int>(scenarios.size())) {
+        throw std::runtime_error("BRS L-shaped scenario index out of range");
+    }
+
+    scenarioProblemData = std::make_unique<ProblemData>(problemData);
+    scenarioProblemData->addData("brsScenarios",
+        std::vector<BRSScenarioData>{scenarios[static_cast<size_t>(scenarioIndex)]});
+
+    bendersImpl.InitSubProblem(*scenarioProblemData, subModel, context);
+
+    relaxedModel = std::make_unique<GRBModel>(subModel.relax());
+    relaxedModel->set(GRB_IntParam_OutputFlag, 0);
+    relaxedModel->update();
+    CollectBRSAssignmentConstrs(*scenarioProblemData, *relaxedModel, relaxedAssignConstrs);
 }
 
 void BRSSubProblemStrategy_LShaped::UpdateSubProblem(const ProblemData& problemData, GRBModel& subModel,
     IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues)
 {
-    bendersImpl.UpdateSubProblem(problemData, subModel, context, zValues);
+    bendersImpl.UpdateSubProblem(*scenarioProblemData, subModel, context, zValues);
 }
 
 Status BRSSubProblemStrategy_LShaped::SolveSubProblem(const ProblemData& problemData, GRBModel& subModel,
     IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues,
     IntegerLShapedCutInfo& cutInfo, double& subObj)
 {
-    return bendersImpl.SolveSubProblem(problemData, subModel, context, zValues, cutInfo, subObj);
+    return bendersImpl.SolveSubProblem(*scenarioProblemData, subModel, context, zValues, cutInfo, subObj);
 }
 
 Status BRSSubProblemStrategy_LShaped::SolveRelaxedSubProblem(const ProblemData& problemData, GRBModel& subModel,
     IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues,
     IntegerLShapedCutInfo& cutInfo, double& subObj)
 {
-    bendersImpl.UpdateSubProblem(problemData, subModel, context, zValues);
-    return BuildBRSRelaxedOptimalityCut(problemData, subModel, zValues, cutInfo, subObj);
+    if (!scenarioProblemData || !relaxedModel) {
+        std::cerr << "BRS relaxed sub-problem is not initialized" << std::endl;
+        return ERROR;
+    }
+
+    return BuildBRSRelaxedOptimalityCut(*scenarioProblemData, *relaxedModel,
+        relaxedAssignConstrs, zValues, cutInfo, subObj);
 }

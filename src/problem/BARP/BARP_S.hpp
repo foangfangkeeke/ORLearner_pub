@@ -78,7 +78,9 @@ private:
 
 class BRSSubProblemStrategy_LShaped : public ISubProblemStrategy_IntegerLShaped {
 public:
-    void InitSubProblem(const ProblemData& problemData, GRBModel& subModel,
+    int ScenarioCount(const ProblemData& problemData) const override;
+
+    void InitSubProblem(const ProblemData& problemData, int scenarioIndex, GRBModel& subModel,
         IntegerLShapedSubProblemContext& context) override;
 
     void UpdateSubProblem(const ProblemData& problemData, GRBModel& subModel,
@@ -94,9 +96,12 @@ public:
 
     std::unique_ptr<ISubProblemStrategy_IntegerLShaped> Clone() const override
     {
-        return std::make_unique<BRSSubProblemStrategy_LShaped>(*this);
+        return std::make_unique<BRSSubProblemStrategy_LShaped>();
     }
 
 private:
     BRSSubProblemStrategy_Benders bendersImpl;
+    std::unique_ptr<ProblemData> scenarioProblemData;
+    std::unique_ptr<GRBModel> relaxedModel;
+    std::vector<GRBConstr> relaxedAssignConstrs;
 };

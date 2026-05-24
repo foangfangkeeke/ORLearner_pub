@@ -138,6 +138,8 @@ Status IntegerLShaped::Initialize()
         sub->env->set(GRB_IntParam_OutputFlag, 0);
         sub->env->start();
         sub->model = std::make_unique<GRBModel>(*sub->env);
+        sub->model->set(GRB_IntParam_OutputFlag, 0);
+        sub->model->set(GRB_DoubleParam_MIPGap, 0.0);
         sub->context.Clear();
         sub->strategy->InitSubProblem(*problemData, scenarioIndex, *sub->model, sub->context);
         subProblems.push_back(std::move(sub));

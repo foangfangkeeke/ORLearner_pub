@@ -39,14 +39,15 @@ Status UsingSolver::Initialize()
 
     env = std::make_unique<GRBEnv>(true);
     env->set("LogFile", "gurobi_log.txt");
-    env->set(GRB_IntParam_OutputFlag, 1);
     env->start();
     model = std::make_unique<GRBModel>(*env);
+    model->set(GRB_IntParam_OutputFlag, 1);
 
     Status initStatus = dataIniter->DataInit(*model);
     if (initStatus != OK) {
         return initStatus;
     }
+    ApplySolverConfig(*model);
     model->update();
     initialized = true;
     return OK;

@@ -104,8 +104,8 @@ BendersCutEvaluation BuildBendersCutEvaluation(const BendersCutInfo& cutInfo, co
     return evaluation;
 }
 
-BendersSubSolver::BendersSubSolver(std::unique_ptr<ISubProblemStrategy_Benders> strategy)
-    : strategy(std::move(strategy))
+BendersSubSolver::BendersSubSolver(std::unique_ptr<ISubProblemStrategy_Benders> strategy, const SolverConfig& solverConfig)
+    : strategy(std::move(strategy)), solverConfig(solverConfig)
 {
     if (!this->strategy) {
         throw std::invalid_argument("Sub-problem strategy cannot be null");
@@ -115,9 +115,9 @@ BendersSubSolver::BendersSubSolver(std::unique_ptr<ISubProblemStrategy_Benders> 
 void BendersSubSolver::Init(const ProblemData& problemData)
 {
     env = std::make_unique<GRBEnv>(true);
-    env->set(GRB_IntParam_OutputFlag, 0);
     env->start();
     model = std::make_unique<GRBModel>(*env);
+    model->set(GRB_IntParam_OutputFlag, 0);
     strategy->InitSubProblem(problemData, *model, context);
 }
 
@@ -134,9 +134,9 @@ Status BendersDecomposition::Initialize()
 {
     env = std::make_unique<GRBEnv>(true);
     env->set("LogFile", "gurobi_log.txt");
-    env->set(GRB_IntParam_OutputFlag, 0);
     env->start();
     model = std::make_unique<GRBModel>(*env);
+    model->set(GRB_IntParam_OutputFlag, 0);
 
     problemData = std::make_unique<ProblemData>();
 
@@ -147,12 +147,13 @@ Status BendersDecomposition::Initialize()
 
     const auto& strategies = it->second;
     dataIniter = std::get<0>(strategies)(dataFolder);
-    sub = std::make_unique<BendersSubSolver>(std::get<1>(strategies)());
+    sub = std::make_unique<BendersSubSolver>(std::get<1>(strategies)(), solverConfig);
 
     dataIniter->DataInit(*problemData);
     std::vector<ProblemDataConstr> masterConstrs = dataIniter->ConstrInit(*problemData);
     const auto& masterVars = problemData->getData<std::vector<ProblemDataVar>>("masterVars");
     InitializeBendersMasterModel(*model, masterVars, masterConstrs, yVars, theta);
+    ApplyAlgorithmConfig(*model);
 
     sub->Init(*problemData);
 

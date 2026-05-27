@@ -3,6 +3,7 @@
 #include "branch_and_price.hpp"
 #include "benders_decomposition.hpp"
 #include "barp_s_integer_l_shaped.hpp"
+#include "solver_config.hpp"
 #include "tools.hpp"
 #include "wireless_charging_strategies.hpp"
 
@@ -99,6 +100,7 @@ int main(int argc, char* argv[]) {
         }
 
         MILPSolver solver;
+        solver.SetSolverConfig(LoadSolverConfig());
         string dataFolder = dataType + "_data";
 
         if (algLower == "cg") { // TODO: 直接算法名传进去更好

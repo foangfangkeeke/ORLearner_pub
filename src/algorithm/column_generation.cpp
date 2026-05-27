@@ -153,9 +153,9 @@ Status ColumnGeneration::Initialize()
 
     env = std::make_unique<GRBEnv>(true);
     env->set("LogFile", "gurobi_log.txt");
-    env->set(GRB_IntParam_OutputFlag, 0);
     env->start();
     model = std::make_unique<GRBModel>(*env);
+    model->set(GRB_IntParam_OutputFlag, 0);
 
     problemData = std::make_unique<ProblemData>();
 
@@ -175,6 +175,7 @@ Status ColumnGeneration::Initialize()
         model->addConstr(GRBLinExpr(), std::get<0x2>(constrs[i]), std::get<0x1>(constrs[i]), std::get<0x0>(constrs[i]));
     }
     model->update();
+    ApplyAlgorithmConfig(*model);
     initialized = true;
 
     return OK;

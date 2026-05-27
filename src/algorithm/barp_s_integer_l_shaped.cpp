@@ -102,9 +102,9 @@ Status IntegerLShaped::Initialize()
 
     env = std::make_unique<GRBEnv>(true);
     env->set("LogFile", "gurobi_log.txt");
-    env->set(GRB_IntParam_OutputFlag, 0);
     env->start();
     model = std::make_shared<GRBModel>(*env);
+    model->set(GRB_IntParam_OutputFlag, 0);
 
     auto it = kStrategyMap.find(problemType);
     if (it == kStrategyMap.end()) {
@@ -122,6 +122,7 @@ Status IntegerLShaped::Initialize()
     const std::vector<ProblemDataConstr> masterConstrs = dataIniter->ConstrInit(*problemData);
     const auto& masterVars = problemData->getData<std::vector<ProblemDataVar>>("masterVars");
     InitializeBendersMasterModel(*model, masterVars, masterConstrs, zVars, theta, true);
+    ApplyAlgorithmConfig(*model);
 
     subProblems.clear();
     const int scenarioCount = subProblemStrategy->ScenarioCount(*problemData);
@@ -135,7 +136,6 @@ Status IntegerLShaped::Initialize()
         sub->scenarioIndex = scenarioIndex;
         sub->strategy = subProblemStrategy->Clone();
         sub->env = std::make_unique<GRBEnv>(true);
-        sub->env->set(GRB_IntParam_OutputFlag, 0);
         sub->env->start();
         sub->model = std::make_unique<GRBModel>(*sub->env);
         sub->model->set(GRB_IntParam_OutputFlag, 0);

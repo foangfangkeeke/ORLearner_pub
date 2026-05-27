@@ -92,6 +92,7 @@ public:
     ColumnGeneration(const ColumnGeneration& other) {
         this->problemType = other.problemType;
         this->dataFolder = other.dataFolder;
+        this->solverConfig = other.solverConfig;
         this->maxIters = other.maxIters;
         this->tolerance = other.tolerance;
         this->initialized = other.initialized;

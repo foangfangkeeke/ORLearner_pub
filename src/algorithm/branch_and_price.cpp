@@ -3,6 +3,7 @@
 Status BranchAndPrice::Initialize() {
     auto rootNode = std::make_shared<BranchNode>(problemType, dataFolder);
     rootNode->nodeId = nextNodeId++;
+    rootNode->cgSolver->SetSolverConfig(solverConfig);
     if (rootNode->cgSolver->Initialize() != OK) {
         std::cerr << "Root node CG initialization failed!" << std::endl;
         return ERROR;

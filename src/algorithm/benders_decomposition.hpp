@@ -110,13 +110,14 @@ public:
 
 class BendersSubSolver {
 public:
-    explicit BendersSubSolver(std::unique_ptr<ISubProblemStrategy_Benders> strategy);
+    BendersSubSolver(std::unique_ptr<ISubProblemStrategy_Benders> strategy, const SolverConfig& solverConfig);
     void Init(const ProblemData& problemData);
     Status Solve(const ProblemData& problemData, const std::vector<double>& yValues, BendersCutInfo& cutInfo, double& subObj);
     ~BendersSubSolver();
 
 private:
     std::unique_ptr<ISubProblemStrategy_Benders> strategy;
+    SolverConfig solverConfig;
     std::unique_ptr<GRBEnv> env;
     std::unique_ptr<GRBModel> model;
     BendersSubProblemContext context;

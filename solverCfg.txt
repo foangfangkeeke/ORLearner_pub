@@ -1,0 +1,10 @@
+# Solver configuration
+mipGap=0
+timeLimit=18000
+threads=14
+
+# Gurobi default
+presolve=-1
+mipFocus=0
+heuristics=0.05
+method=-1

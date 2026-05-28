@@ -35,8 +35,6 @@ SolverConfig LoadSolverConfig()
     std::ifstream fin(kSolverConfigPath);
 
     SolverConfig config;
-    bool hasMipGap = false;
-    bool hasTimeLimit = false;
     std::string line;
     int lineNo = 0;
     while (std::getline(fin, line)) {
@@ -59,10 +57,8 @@ SolverConfig LoadSolverConfig()
 
         if (key == "mipGap") {
             config.mipGap = std::stod(value);
-            hasMipGap = true;
         } else if (key == "timeLimit") {
             config.timeLimit = std::stod(value);
-            hasTimeLimit = true;
         } else if (key == "presolve") {
             config.presolve = std::stoi(value);
         } else if (key == "mipFocus") {
@@ -76,10 +72,6 @@ SolverConfig LoadSolverConfig()
         } else {
             throw std::runtime_error("Unknown solver config key: " + key);
         }
-    }
-
-    if (!hasMipGap || !hasTimeLimit) {
-        throw std::runtime_error("solverCfg.txt must define mipGap and timeLimit");
     }
     return config;
 }

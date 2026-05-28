@@ -153,7 +153,7 @@ Status BendersDecomposition::Initialize()
     std::vector<ProblemDataConstr> masterConstrs = dataIniter->ConstrInit(*problemData);
     const auto& masterVars = problemData->getData<std::vector<ProblemDataVar>>("masterVars");
     InitializeBendersMasterModel(*model, masterVars, masterConstrs, yVars, theta);
-    ApplyAlgorithmConfig(*model);
+    model->set(GRB_DoubleParam_MIPGap, 0.0);
 
     sub->Init(*problemData);
 
@@ -169,6 +169,13 @@ Status BendersDecomposition::Solve()
     const auto solveStart = Tools::Clock::now();
     int iter = 0;
     while (iter < maxIters) {
+        const double elapsedSec = Tools::ElapsedMs(solveStart, Tools::Clock::now()) / 1000.0;
+        if (elapsedSec >= solverConfig.timeLimit) {
+            std::cout << "Benders reached time limit: " << solverConfig.timeLimit << "s"
+                      << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, Tools::Clock::now()) << std::endl;
+            return ERROR;
+        }
+
         const auto iterStart = Tools::Clock::now();
         model->optimize();
         int masterStatus = model->get(GRB_IntAttr_Status);
@@ -224,11 +231,21 @@ Status BendersDecomposition::Solve()
         }
 
         std::cout << "Benders iter " << iter;
+        double relGap = 1.0;
         if (std::isfinite(bestUpperBound)) {
             std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound;
             double denom = std::max(1.0, std::fabs(bestUpperBound));
-            double relGap = (bestUpperBound - bestLowerBound) / denom;
+            relGap = (bestUpperBound - bestLowerBound) / denom;
             std::cout << ", gap=" << relGap * 100.0 << "%, " << (cutInfo.isOptimalityCut ? "opt cut" : "feas cut");
+        }
+
+        if (std::isfinite(bestUpperBound) && relGap <= solverConfig.mipGap) {
+            const auto iterEnd = Tools::Clock::now();
+            std::cout << ", iter_time_ms=" << Tools::ElapsedMs(iterStart, iterEnd) << std::endl;
+            std::cout << "Benders converged: gap=" << relGap * 100.0 << "% <= mipGap=" << solverConfig.mipGap * 100.0 << "%" << std::endl;
+            const auto solveEnd = Tools::Clock::now();
+            std::cout << "Benders final solve time: " << Tools::ElapsedMs(solveStart, solveEnd) << " ms" << std::endl;
+            return OK;
         }
 
         if (!cutAdded) {

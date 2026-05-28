@@ -122,7 +122,7 @@ Status IntegerLShaped::Initialize()
     const std::vector<ProblemDataConstr> masterConstrs = dataIniter->ConstrInit(*problemData);
     const auto& masterVars = problemData->getData<std::vector<ProblemDataVar>>("masterVars");
     InitializeBendersMasterModel(*model, masterVars, masterConstrs, zVars, theta, true);
-    ApplyAlgorithmConfig(*model);
+    model->set(GRB_DoubleParam_MIPGap, 0.0);
 
     subProblems.clear();
     const int scenarioCount = subProblemStrategy->ScenarioCount(*problemData);
@@ -306,6 +306,13 @@ Status IntegerLShaped::Solve()
 {
     const auto solveStart = algorithmStart;
     for (int iter = 0; iter < maxIters; ++iter) {
+        const double elapsedSec = Tools::ElapsedMs(algorithmStart, Tools::Clock::now()) / 1000.0;
+        if (elapsedSec >= solverConfig.timeLimit) {
+            std::cout << "Integer L-shaped reached time limit: " << solverConfig.timeLimit << "s"
+                      << ", elapsed_ms=" << Tools::ElapsedMs(algorithmStart, Tools::Clock::now()) << std::endl;
+            return ERROR;
+        }
+
         model->optimize();
         int masterStatus = model->get(GRB_IntAttr_Status);
         if (!(masterStatus == GRB_OPTIMAL ||
@@ -403,7 +410,9 @@ Status IntegerLShaped::Solve()
             std::cout << ", gap=" << (bestUpperBound - bestLowerBound) / denom * 100.0 << "%";
         }
 
-        if (thetaValue + tolerance >= aggregatedQValue) {
+        const double gapDenom = std::max(1.0, std::fabs(bestUpperBound));
+        const double relGap = (bestUpperBound - bestLowerBound) / gapDenom;
+        if (relGap <= solverConfig.mipGap) {
             const auto iterEnd = Tools::Clock::now();
             std::cout << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
             PrintBestSolution();

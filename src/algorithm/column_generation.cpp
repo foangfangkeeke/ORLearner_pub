@@ -175,7 +175,7 @@ Status ColumnGeneration::Initialize()
         model->addConstr(GRBLinExpr(), std::get<0x2>(constrs[i]), std::get<0x1>(constrs[i]), std::get<0x0>(constrs[i]));
     }
     model->update();
-    ApplyAlgorithmConfig(*model);
+    model->set(GRB_DoubleParam_MIPGap, 0.0);
     initialized = true;
 
     return OK;
@@ -204,6 +204,13 @@ Status ColumnGeneration::Solve()
     int iter = 0;
 
     while (iter <= maxIters) {
+        const double elapsedSec = Tools::ElapsedMs(solveStart, Tools::Clock::now()) / 1000.0;
+        if (elapsedSec >= solverConfig.timeLimit) {
+            std::cout << "ColumnGeneration reached time limit: " << solverConfig.timeLimit << "s"
+                      << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, Tools::Clock::now()) << std::endl;
+            return ERROR;
+        }
+
         const auto iterStart = Tools::Clock::now();
         UpdateMP();
         model->optimize(); // RLMP

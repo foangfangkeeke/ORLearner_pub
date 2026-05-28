@@ -29,11 +29,6 @@ protected:
         model.set(GRB_IntParam_Method, solverConfig.method);
     }
 
-    void ApplyAlgorithmConfig(GRBModel& model) const {
-        model.set(GRB_DoubleParam_MIPGap, solverConfig.mipGap);
-        model.set(GRB_DoubleParam_TimeLimit, solverConfig.timeLimit);
-    }
-
     SolverConfig solverConfig;
 };
 

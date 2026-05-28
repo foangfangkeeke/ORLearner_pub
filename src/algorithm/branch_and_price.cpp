@@ -1,4 +1,5 @@
 #include "branch_and_price.hpp"
+#include "tools.hpp"
 
 Status BranchAndPrice::Initialize() {
     auto rootNode = std::make_shared<BranchNode>(problemType, dataFolder);
@@ -128,7 +129,15 @@ Status BranchAndPrice::ProcessNode(std::shared_ptr<BranchNode> node) {
 
 
 Status BranchAndPrice::Solve() {
+    const auto solveStart = Tools::Clock::now();
     while (!nodeQueue.empty()) {
+        const double elapsedSec = Tools::ElapsedMs(solveStart, Tools::Clock::now()) / 1000.0;
+        if (elapsedSec >= solverConfig.timeLimit) {
+            std::cout << "BranchAndPrice reached time limit: " << solverConfig.timeLimit << "s"
+                      << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, Tools::Clock::now()) << std::endl;
+            return ERROR;
+        }
+
         auto currentNode = nodeQueue.front();
         nodeQueue.pop();
 

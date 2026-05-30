@@ -119,6 +119,7 @@ IntegerLShaped::IntegerLShaped(ProblemType problemType, std::string dataFolder, 
 Status IntegerLShaped::Initialize()
 {
     env = std::make_unique<GRBEnv>(true);
+    env->set(GRB_IntParam_OutputFlag, 0);
     env->set("LogFile", "gurobi_log.txt");
     env->start();
     model = std::make_shared<GRBModel>(*env);
@@ -159,6 +160,7 @@ Status IntegerLShaped::Initialize()
         sub->scenarioIndex = scenarioIndex;
         sub->strategy = subProblemStrategy->Clone();
         sub->env = std::make_unique<GRBEnv>(true);
+        sub->env->set(GRB_IntParam_OutputFlag, 0);
         sub->env->start();
         sub->model = std::make_unique<GRBModel>(*sub->env);
         sub->model->set(GRB_IntParam_OutputFlag, 0);
@@ -377,7 +379,10 @@ Status IntegerLShaped::Solve()
             return ERROR;
         }
 
+        const auto masterStart = Tools::Clock::now();
         model->optimize();
+        const auto masterEnd = Tools::Clock::now();
+        const long long masterMs = Tools::ElapsedMs(masterStart, masterEnd);
         int masterStatus = model->get(GRB_IntAttr_Status);
         if (!(masterStatus == GRB_OPTIMAL ||
               (masterStatus == GRB_TIME_LIMIT && model->get(GRB_IntAttr_SolCount) > 0))) {
@@ -394,7 +399,10 @@ Status IntegerLShaped::Solve()
 
         double relaxedQValue = 0.0;
         IntegerLShapedCutInfo continuousCutInfo;
+        const auto relaxedStart = Tools::Clock::now();
         Status relaxedStatus = EvaluateSubProblems(zValues, true, continuousCutInfo, relaxedQValue);
+        const auto relaxedEnd = Tools::Clock::now();
+        const long long relaxedMs = Tools::ElapsedMs(relaxedStart, relaxedEnd);
         if (relaxedStatus != OK) { // Error in solving relaxed sub-problem
             std::cerr << "Relaxed sub-problem failed in iteration " << iter << std::endl;
             return ERROR;
@@ -412,7 +420,9 @@ Status IntegerLShaped::Solve()
             }
             model->update();
             const auto iterEnd = Tools::Clock::now();
-            std::cout << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
+            std::cout << ", master_ms=" << masterMs
+                      << ", relaxed_ms=" << relaxedMs
+                      << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
             continue;
         }
         // Relaxed sub-problem feasible and can be cut.
@@ -434,6 +444,8 @@ Status IntegerLShaped::Solve()
                 model->update();
                 const auto iterEnd = Tools::Clock::now();
                 std::cout << ", cut from relaxation"
+                          << ", master_ms=" << masterMs
+                          << ", relaxed_ms=" << relaxedMs
                           << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
                 continue;
             }
@@ -441,7 +453,10 @@ Status IntegerLShaped::Solve()
 
         double aggregatedQValue = 0.0;
         IntegerLShapedCutInfo integerCutInfo;
+        const auto integerStart = Tools::Clock::now();
         Status secondStageStatus = EvaluateSubProblems(zValues, false, integerCutInfo, aggregatedQValue);
+        const auto integerEnd = Tools::Clock::now();
+        const long long integerMs = Tools::ElapsedMs(integerStart, integerEnd);
         if (secondStageStatus != OK) {
             std::cerr << "Integer L-shaped second-stage evaluation failed in iteration " << iter << std::endl;
             return ERROR;
@@ -459,7 +474,10 @@ Status IntegerLShaped::Solve()
 
             model->update();
             const auto iterEnd = Tools::Clock::now();
-            std::cout << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
+            std::cout << ", master_ms=" << masterMs
+                      << ", relaxed_ms=" << relaxedMs
+                      << ", integer_ms=" << integerMs
+                      << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
             continue;
         }
 
@@ -484,7 +502,10 @@ Status IntegerLShaped::Solve()
         const double relGap = (bestUpperBound - bestLowerBound) / gapDenom;
         if (relGap <= solverConfig.mipGap) {
             const auto iterEnd = Tools::Clock::now();
-            std::cout << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
+            std::cout << ", master_ms=" << masterMs
+                      << ", relaxed_ms=" << relaxedMs
+                      << ", integer_ms=" << integerMs
+                      << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
             PrintBestSolution();
             std::cout << "Integer L-shaped converged." << std::endl;
             const auto solveEnd = Tools::Clock::now();
@@ -496,7 +517,10 @@ Status IntegerLShaped::Solve()
         model->addConstr(cutPriority.expr <= theta, cutPriority.name);
         model->update();
         const auto iterEnd = Tools::Clock::now();
-        std::cout << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
+        std::cout << ", master_ms=" << masterMs
+                  << ", relaxed_ms=" << relaxedMs
+                  << ", integer_ms=" << integerMs
+                  << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
     }
 
     const auto solveEnd = Tools::Clock::now();

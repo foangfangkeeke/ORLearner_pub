@@ -20,6 +20,26 @@ namespace {
 using DataInitFactory = std::function<std::unique_ptr<IDataInitializationStrategy_IntegerLShaped>(const std::string&)>;
 using SubFactory = std::function<std::unique_ptr<ISubProblemStrategy_IntegerLShaped>()>;
 
+enum class WarmStartStrategy {
+    ZeroLowerBound,
+    IntegerSubProblem,
+    RelaxedSubProblem
+};
+
+constexpr WarmStartStrategy kWarmStartStrategy = WarmStartStrategy::RelaxedSubProblem;
+constexpr bool kPruneByUb = false;
+
+const char* WarmStartStrategyName()
+{
+    if constexpr (kWarmStartStrategy == WarmStartStrategy::ZeroLowerBound) {
+        return "zero lower bound";
+    }
+    if constexpr (kWarmStartStrategy == WarmStartStrategy::IntegerSubProblem) {
+        return "integer subproblem";
+    }
+    return "relaxed subproblem";
+}
+
 struct SubProblemEvalResult {
     Status status = ERROR;
     IntegerLShapedCutInfo cutInfo;
@@ -298,38 +318,53 @@ Status IntegerLShaped::EvaluateSubProblems(const std::vector<double>& zValues, b
     return OK;
 }
 
+Status IntegerLShaped::ApplyWarmStart()
+{
+    double warmL = 0.0;
+    std::vector<double> scenarioLs;
+    std::vector<double> warmZ;
+    bestUpperBound = 1e9;
+
+    if constexpr (kWarmStartStrategy == WarmStartStrategy::ZeroLowerBound) {
+        scenarioLs.assign(subProblems.size(), 0.0);
+    } else {
+        warmZ = dataIniter->BuildWarmStartMasterValues(*problemData);
+        IntegerLShapedCutInfo warmCutInfo;
+
+        const bool relaxedWarmStart = kWarmStartStrategy == WarmStartStrategy::RelaxedSubProblem;
+        Status warmStatus = EvaluateSubProblems(warmZ, relaxedWarmStart,
+            warmCutInfo, warmL, &scenarioLs);
+        if (warmStatus != OK) {
+            return warmStatus;
+        }
+
+        if constexpr (kWarmStartStrategy == WarmStartStrategy::IntegerSubProblem) {
+            const bool warmMasterFeasible = dataIniter->IsWarmStartMasterFeasible(*problemData, warmZ, tolerance);
+            if (warmMasterFeasible) {
+                UpdateIncumbent(warmZ, warmL);
+            }
+        }
+    }
+
+    globalLowerBound = warmL;
+    for (size_t idx = 0; idx < subProblems.size(); ++idx) {
+        subProblems[idx]->strategy->SetLowerBound(scenarioLs[idx]);
+    }
+
+    return OK;
+}
+
 Status IntegerLShaped::Solve()
 {
     algorithmStart = Tools::Clock::now();
     const auto solveStart = algorithmStart;
-    bestUpperBound = 1e9;
 
-    const auto warmStartEvalStart = Tools::Clock::now();
-    const std::vector<double> warmStartZ = dataIniter->BuildWarmStartMasterValues(*problemData);
-    IntegerLShapedCutInfo warmIntegerCutInfo;
-    std::vector<double> warmScenarioValues;
-
-    double warmIntegerValue = -1e9;
-    Status integerStatus = EvaluateSubProblems(warmStartZ, false,
-        warmIntegerCutInfo, warmIntegerValue, &warmScenarioValues);
-    if (integerStatus != OK) {
-        return integerStatus;
+    Status warmStartStatus = ApplyWarmStart();
+    if (warmStartStatus != OK) {
+        return warmStartStatus;
     }
-    const auto warmStartEnd = Tools::Clock::now();
-
-    for (size_t idx = 0; idx < subProblems.size(); ++idx) {
-        subProblems[idx]->strategy->SetLowerBound(warmScenarioValues[idx]);
-    }
-
-    globalLowerBound = warmIntegerValue;
-    const bool warmMasterFeasible = dataIniter->IsWarmStartMasterFeasible(*problemData, warmStartZ, tolerance);
-    if (warmMasterFeasible) {
-        std::cout << "Warm start solution is feasible for the master problem with objective value: " << warmIntegerValue
-                  << ", elapsed_ms=" << Tools::ElapsedMs(algorithmStart, warmStartEnd) << std::endl;
-    } else {
-        std::cout << "Warm start solution is not feasible for the master problem"
-                  << ", elapsed_ms=" << Tools::ElapsedMs(algorithmStart, warmStartEnd) << std::endl;
-    }
+    std::cout << "Integer L-shaped warm start strategy=" << WarmStartStrategyName()
+              << ", elapsed_ms=" << Tools::ElapsedMs(algorithmStart, Tools::Clock::now()) << std::endl;
 
     model->addConstr(theta >= globalLowerBound, "theta_global_lb");
     model->update();
@@ -382,20 +417,26 @@ Status IntegerLShaped::Solve()
         }
         // Relaxed sub-problem feasible and can be cut.
         if (std::isfinite(relaxedQValue) && thetaValue + tolerance < relaxedQValue) {
-            std::cout << "Integer L-shaped iter " << iter << ", theta=" << thetaValue << ", Q_lp(z)=" << relaxedQValue;
-            if (std::isfinite(bestUpperBound)) {
-                const double denom = std::max(1.0, std::fabs(bestUpperBound));
-                std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound
-                        << ", gap=" << (bestUpperBound - bestLowerBound) / denom * 100.0 << "%";
-            }
-
             const CutEval cutContinuous = BuildContinuousCut(continuousCutInfo, zValues, iter);
             model->addConstr(cutContinuous.expr <= theta, cutContinuous.name);
-            model->update();
-            const auto iterEnd = Tools::Clock::now();
-            std::cout << ", cut from relaxation"
-                      << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
-            continue;
+            const double relaxedObj = fixedCost + relaxedQValue;
+            const bool canImproveUb = relaxedObj + tolerance < bestUpperBound;
+            const bool solveInteger = kPruneByUb && canImproveUb;
+
+            if (!solveInteger) {
+                std::cout << "Integer L-shaped iter " << iter << ", theta=" << thetaValue << ", Q_lp(z)=" << relaxedQValue;
+                if (std::isfinite(bestUpperBound)) {
+                    const double denom = std::max(1.0, std::fabs(bestUpperBound));
+                    std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound
+                            << ", gap=" << (bestUpperBound - bestLowerBound) / denom * 100.0 << "%";
+                }
+
+                model->update();
+                const auto iterEnd = Tools::Clock::now();
+                std::cout << ", cut from relaxation"
+                          << ", elapsed_ms=" << Tools::ElapsedMs(solveStart, iterEnd) << std::endl;
+                continue;
+            }
         }
 
         double aggregatedQValue = 0.0;

@@ -80,6 +80,8 @@ private:
     Status EvaluateSubProblems(const std::vector<double>& zValues, bool relaxed,
         IntegerLShapedCutInfo& cutInfo, double& subObj, std::vector<double>* scenarioSubObjs = nullptr);
 
+    Status ApplyWarmStart();
+
     void UpdateIncumbent(const std::vector<double>& zValues, double secondStageValue);
 
     void PrintBestSolution() const;

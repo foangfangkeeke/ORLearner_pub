@@ -98,8 +98,6 @@ IntegerLShaped::IntegerLShaped(ProblemType problemType, std::string dataFolder, 
 
 Status IntegerLShaped::Initialize()
 {
-    algorithmStart = Tools::Clock::now();
-
     env = std::make_unique<GRBEnv>(true);
     env->set("LogFile", "gurobi_log.txt");
     env->start();
@@ -118,11 +116,15 @@ Status IntegerLShaped::Initialize()
     }
 
     problemData = std::make_unique<ProblemData>();
+    const auto dataInitStart = Tools::Clock::now();
     dataIniter->DataInit(*problemData);
     const std::vector<ProblemDataConstr> masterConstrs = dataIniter->ConstrInit(*problemData);
     const auto& masterVars = problemData->getData<std::vector<ProblemDataVar>>("masterVars");
     InitializeBendersMasterModel(*model, masterVars, masterConstrs, zVars, theta, true);
     model->set(GRB_DoubleParam_MIPGap, 0.0);
+    const auto dataInitEnd = Tools::Clock::now();
+    std::cout << "Integer L-shaped data/master initialization elapsed_ms="
+              << Tools::ElapsedMs(dataInitStart, dataInitEnd) << std::endl;
 
     subProblems.clear();
     const int scenarioCount = subProblemStrategy->ScenarioCount(*problemData);
@@ -130,6 +132,7 @@ Status IntegerLShaped::Initialize()
         throw std::runtime_error("Integer L-shaped requires at least one scenario sub-problem.");
     }
 
+    const auto subProblemsInitStart = Tools::Clock::now();
     subProblems.reserve(static_cast<size_t>(scenarioCount));
     for (int scenarioIndex = 0; scenarioIndex < scenarioCount; ++scenarioIndex) {
         auto sub = std::make_unique<ScenarioSubProblem>();
@@ -144,28 +147,9 @@ Status IntegerLShaped::Initialize()
         sub->strategy->InitSubProblem(*problemData, scenarioIndex, *sub->model, sub->context);
         subProblems.push_back(std::move(sub));
     }
-
-    const std::vector<double> warmStartZ = dataIniter->BuildWarmStartMasterValues(*problemData);
-    IntegerLShapedCutInfo warmIntegerCutInfo;
-
-    double warmIntegerValue = -1e9;
-    Status integerStatus = EvaluateSubProblems(warmStartZ, false, warmIntegerCutInfo, warmIntegerValue);
-    if (integerStatus != OK) {
-        return integerStatus;
-    }
-    const auto warmStartEnd = Tools::Clock::now();
-
-    globalLowerBound = warmIntegerValue;
-    const bool warmMasterFeasible = dataIniter->IsWarmStartMasterFeasible(*problemData, warmStartZ, tolerance);
-    if (warmMasterFeasible) {
-        std::cout << "Warm start solution is feasible for the master problem with objective value: " << warmIntegerValue
-                  << ", elapsed_ms=" << Tools::ElapsedMs(algorithmStart, warmStartEnd) << std::endl;
-        UpdateIncumbent(warmStartZ, warmIntegerValue);
-    } else {
-        std::cout << "Warm start solution is not feasible for the master problem"
-                  << ", elapsed_ms=" << Tools::ElapsedMs(algorithmStart, warmStartEnd) << std::endl;
-    }
-    model->addConstr(theta >= globalLowerBound, "theta_global_lb");
+    const auto subProblemsInitEnd = Tools::Clock::now();
+    std::cout << "Integer L-shaped sub-problems initialization elapsed_ms="
+              << Tools::ElapsedMs(subProblemsInitStart, subProblemsInitEnd) << std::endl;
 
     model->update();
 
@@ -242,7 +226,7 @@ IntegerLShaped::CutEval IntegerLShaped::BuildContinuousCut(const IntegerLShapedC
 }
 
 Status IntegerLShaped::EvaluateSubProblems(const std::vector<double>& zValues, bool relaxed,
-    IntegerLShapedCutInfo& cutInfo, double& subObj)
+    IntegerLShapedCutInfo& cutInfo, double& subObj, std::vector<double>* scenarioSubObjs)
 {
     if (subProblems.empty()) {
         std::cerr << "Integer L-shaped sub-problems are not initialized" << std::endl;
@@ -266,7 +250,11 @@ Status IntegerLShaped::EvaluateSubProblems(const std::vector<double>& zValues, b
     cutInfo.yCoeffs.assign(zValues.size(), 0.0);
     cutInfo.constant = 0.0;
     subObj = 0.0;
+    if (scenarioSubObjs != nullptr) {
+        scenarioSubObjs->assign(subProblems.size(), 0.0);
+    }
 
+    size_t scenarioResultIdx = 0;
     for (auto& future : futures) {
         SubProblemEvalResult result;
         try {
@@ -281,7 +269,15 @@ Status IntegerLShaped::EvaluateSubProblems(const std::vector<double>& zValues, b
             return result.status;
         }
 
+        if (scenarioSubObjs != nullptr) {
+            (*scenarioSubObjs)[scenarioResultIdx] = result.subObj;
+        }
+        ++scenarioResultIdx;
+
         if (!result.cutInfo.isOptimalityCut) {
+            if (scenarioSubObjs != nullptr) {
+                throw std::runtime_error("Integer L-shaped scenario lower bounds require optimal sub-problem results");
+            }
             cutInfo = result.cutInfo;
             subObj = result.subObj;
             return OK;
@@ -304,7 +300,40 @@ Status IntegerLShaped::EvaluateSubProblems(const std::vector<double>& zValues, b
 
 Status IntegerLShaped::Solve()
 {
+    algorithmStart = Tools::Clock::now();
     const auto solveStart = algorithmStart;
+    bestUpperBound = 1e9;
+
+    const auto warmStartEvalStart = Tools::Clock::now();
+    const std::vector<double> warmStartZ = dataIniter->BuildWarmStartMasterValues(*problemData);
+    IntegerLShapedCutInfo warmIntegerCutInfo;
+    std::vector<double> warmScenarioValues;
+
+    double warmIntegerValue = -1e9;
+    Status integerStatus = EvaluateSubProblems(warmStartZ, false,
+        warmIntegerCutInfo, warmIntegerValue, &warmScenarioValues);
+    if (integerStatus != OK) {
+        return integerStatus;
+    }
+    const auto warmStartEnd = Tools::Clock::now();
+
+    for (size_t idx = 0; idx < subProblems.size(); ++idx) {
+        subProblems[idx]->strategy->SetLowerBound(warmScenarioValues[idx]);
+    }
+
+    globalLowerBound = warmIntegerValue;
+    const bool warmMasterFeasible = dataIniter->IsWarmStartMasterFeasible(*problemData, warmStartZ, tolerance);
+    if (warmMasterFeasible) {
+        std::cout << "Warm start solution is feasible for the master problem with objective value: " << warmIntegerValue
+                  << ", elapsed_ms=" << Tools::ElapsedMs(algorithmStart, warmStartEnd) << std::endl;
+    } else {
+        std::cout << "Warm start solution is not feasible for the master problem"
+                  << ", elapsed_ms=" << Tools::ElapsedMs(algorithmStart, warmStartEnd) << std::endl;
+    }
+
+    model->addConstr(theta >= globalLowerBound, "theta_global_lb");
+    model->update();
+
     for (int iter = 0; iter < maxIters; ++iter) {
         const double elapsedSec = Tools::ElapsedMs(algorithmStart, Tools::Clock::now()) / 1000.0;
         if (elapsedSec >= solverConfig.timeLimit) {

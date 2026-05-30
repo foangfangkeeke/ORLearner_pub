@@ -46,6 +46,8 @@ public:
         const ProblemData& problemData, GRBModel& subModel, IntegerLShapedSubProblemContext& context,
         const std::vector<double>& zValues, IntegerLShapedCutInfo& cutInfo, double& subObj) = 0;
 
+    virtual void SetLowerBound(double lowerBound) {}
+
     virtual std::unique_ptr<ISubProblemStrategy_IntegerLShaped> Clone() const = 0;
     virtual ~ISubProblemStrategy_IntegerLShaped() = default;
 };
@@ -76,7 +78,7 @@ private:
         int iter) const;
 
     Status EvaluateSubProblems(const std::vector<double>& zValues, bool relaxed,
-        IntegerLShapedCutInfo& cutInfo, double& subObj);
+        IntegerLShapedCutInfo& cutInfo, double& subObj, std::vector<double>* scenarioSubObjs = nullptr);
 
     void UpdateIncumbent(const std::vector<double>& zValues, double secondStageValue);
 

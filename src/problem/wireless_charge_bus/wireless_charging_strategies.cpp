@@ -108,7 +108,7 @@ static optional<linkTimeType> LoadLinkDistance(const fs::path& filePath) {
     return links;
 }
 
-constexpr double kWirelessEnergySlackPenalty = 1e6;
+constexpr double kWirelessEnergySlackPenalty = 1e4;
 constexpr const char* kWirelessFacilityRhsConstrGroup = "wireless_facility_rhs_constraints";
 constexpr const char* kWirelessFacilityRhsConstrPrefix = "wireless_facility_rhs_m";
 

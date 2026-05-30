@@ -1211,22 +1211,17 @@ void WirelessChargingSubProblemStrategy_LShaped::InitSubProblem(const ProblemDat
     lowerBoundCutAdded = false;
 
     auto& facilityRhsConstrs = context.EnsureConstrGroup(kWirelessFacilityRhsConstrGroup);
-    SetWirelessFacilityRhsConstrs(facilityRhsConstrs, 1.0);
-    subModel.update();
-    subModel.optimize();
-    int lbStatus = subModel.get(GRB_IntAttr_Status);
-    if (lbStatus == GRB_OPTIMAL) {
-        qLowerBound = subModel.get(GRB_DoubleAttr_ObjVal);
-        lowerBoundReady = true;
-    } else {
-        throw std::runtime_error("Wireless L-shaped: failed to solve recourse lower-bound sub-problem to optimality, status="
-            + std::to_string(lbStatus));
-    }
-
     SetWirelessFacilityRhsConstrs(facilityRhsConstrs, 0.0);
     subModel.update();
 
     InitRelaxedSubProblem(problemData, subModel);
+}
+
+void WirelessChargingSubProblemStrategy_LShaped::SetLowerBound(double lowerBound)
+{
+    qLowerBound = lowerBound;
+    lowerBoundReady = true;
+    lowerBoundCutAdded = false;
 }
 
 void WirelessChargingSubProblemStrategy_LShaped::UpdateSubProblem(const ProblemData& problemData, GRBModel& subModel,

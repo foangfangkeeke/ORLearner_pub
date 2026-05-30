@@ -42,6 +42,8 @@ public:
         IntegerLShapedSubProblemContext& context, const std::vector<double>& zValues,
         IntegerLShapedCutInfo& cutInfo, double& subObj) override;
 
+    void SetLowerBound(double lowerBound) override;
+
     std::unique_ptr<ISubProblemStrategy_IntegerLShaped> Clone() const override
     {
         return std::make_unique<WirelessChargingSubProblemStrategy_LShaped>();

@@ -74,6 +74,9 @@ private:
     CutEval BuildPriorityCut(const std::vector<double>& zValues, const std::vector<double>& zCurrent,
         double delta, double lowerBound, int iter) const;
 
+    CutEval BuildClassicCut(const std::vector<double>& zValues, const std::vector<double>& zCurrent,
+        double delta, double lowerBound, int iter) const;
+
     CutEval BuildContinuousCut(const IntegerLShapedCutInfo& cutInfo, const std::vector<double>& zCurrent,
         int iter) const;
 

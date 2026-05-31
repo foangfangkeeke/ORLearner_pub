@@ -234,6 +234,27 @@ IntegerLShaped::CutEval IntegerLShaped::BuildPriorityCut(const std::vector<doubl
     return cut;
 }
 
+IntegerLShaped::CutEval IntegerLShaped::BuildClassicCut(const std::vector<double>& zValues,
+    const std::vector<double>& zCurrent, double delta, double lowerBound, int iter) const
+{
+    // Classic integer L-shaped cut (uniform coefficients, xi=1 for all variables).
+    CutEval cut;
+    cut.name = "integer_l_shaped_cut_classic_" + std::to_string(iter);
+
+    cut.expr = lowerBound + delta;
+    cut.lhsAtCurrent = lowerBound + delta;
+
+    for (size_t idx = 0; idx < zVars.size(); ++idx) {
+        if (zValues[idx] > 0.5) {
+            continue;
+        }
+        cut.expr += -delta * zVars[idx];
+        cut.lhsAtCurrent += -delta * zCurrent[idx];
+    }
+
+    return cut;
+}
+
 IntegerLShaped::CutEval IntegerLShaped::BuildContinuousCut(const IntegerLShapedCutInfo& cutInfo,
     const std::vector<double>& zCurrent, int iter) const
 {
@@ -488,9 +509,6 @@ Status IntegerLShaped::Solve()
 
         double delta = std::max(0.0, aggregatedQValue - globalLowerBound);
 
-        const CutEval cutImproved = BuildImprovedCut(zValues, zValues, delta, globalLowerBound, iter);
-        const CutEval cutPriority = BuildPriorityCut(zValues, zValues, delta, globalLowerBound, iter);
-
         std::cout << "Integer L-shaped iter " << iter << ", theta=" << thetaValue << ", Q(z)=" << aggregatedQValue;
         if (std::isfinite(bestUpperBound)) {
             std::cout << ", UB=" << bestUpperBound << ", LB=" << bestLowerBound;
@@ -513,8 +531,15 @@ Status IntegerLShaped::Solve()
             return OK;
         }
 
-        // model->addConstr(cutImproved.expr <= theta, cutImproved.name); // TODO: not available for all problem types.
+        // const CutEval cutImproved = BuildImprovedCut(zValues, zValues, delta, globalLowerBound, iter);
+        // model->addConstr(cutImproved.expr <= theta, cutImproved.name);
+
+        const CutEval cutPriority = BuildPriorityCut(zValues, zValues, delta, globalLowerBound, iter);
         model->addConstr(cutPriority.expr <= theta, cutPriority.name);
+
+        // const CutEval cutClassic = BuildClassicCut(zValues, zValues, delta, globalLowerBound, iter);
+        // model->addConstr(cutClassic.expr <= theta, cutClassic.name);
+
         model->update();
         const auto iterEnd = Tools::Clock::now();
         std::cout << ", master_ms=" << masterMs

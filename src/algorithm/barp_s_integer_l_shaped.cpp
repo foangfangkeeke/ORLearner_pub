@@ -26,8 +26,14 @@ enum class WarmStartStrategy {
     RelaxedSubProblem
 };
 
+enum class RelaxedCutStrategy {
+    Aggregate,
+    MultiCut
+};
+
 constexpr WarmStartStrategy kWarmStartStrategy = WarmStartStrategy::RelaxedSubProblem;
 constexpr bool kPruneByUb = false;
+constexpr RelaxedCutStrategy kRelaxedCutStrategy = RelaxedCutStrategy::Aggregate;
 
 const char* WarmStartStrategyName()
 {
@@ -153,6 +159,19 @@ Status IntegerLShaped::Initialize()
         throw std::runtime_error("Integer L-shaped requires at least one scenario sub-problem.");
     }
 
+    relaxedThetaVars.clear();
+    if constexpr (kRelaxedCutStrategy == RelaxedCutStrategy::MultiCut) {
+        relaxedThetaVars.reserve(static_cast<size_t>(scenarioCount));
+        GRBLinExpr relaxedThetaSum = 0.0;
+        for (int scenarioIndex = 0; scenarioIndex < scenarioCount; ++scenarioIndex) {
+            GRBVar scenarioTheta = model->addVar(0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS,
+                "theta_relaxed_scenario_" + std::to_string(scenarioIndex));
+            relaxedThetaVars.push_back(scenarioTheta);
+            relaxedThetaSum += scenarioTheta;
+        }
+        model->addConstr(relaxedThetaSum <= theta, "theta_relaxed_sum");
+    }
+
     const auto subProblemsInitStart = Tools::Clock::now();
     subProblems.reserve(static_cast<size_t>(scenarioCount));
     for (int scenarioIndex = 0; scenarioIndex < scenarioCount; ++scenarioIndex) {
@@ -256,20 +275,24 @@ IntegerLShaped::CutEval IntegerLShaped::BuildClassicCut(const std::vector<double
 }
 
 IntegerLShaped::CutEval IntegerLShaped::BuildContinuousCut(const IntegerLShapedCutInfo& cutInfo,
-    const std::vector<double>& zCurrent, int iter) const
+    const std::vector<double>& zCurrent, int iter, int scenarioIndex) const
 {
     // Continuous cut from the relaxed subproblem.
     const BendersCutEvaluation cutEvaluation = BuildBendersCutEvaluation(cutInfo, zVars, zCurrent);
 
     CutEval cut;
     cut.name = "integer_l_shaped_cut_continuous_" + std::to_string(iter);
+    if (scenarioIndex >= 0) {
+        cut.name += "_scenario_" + std::to_string(scenarioIndex);
+    }
     cut.expr = cutEvaluation.expr;
     cut.lhsAtCurrent = cutEvaluation.lhsAtCurrent;
     return cut;
 }
 
 Status IntegerLShaped::EvaluateSubProblems(const std::vector<double>& zValues, bool relaxed,
-    IntegerLShapedCutInfo& cutInfo, double& subObj, std::vector<double>* scenarioSubObjs)
+    IntegerLShapedCutInfo& cutInfo, double& subObj, std::vector<double>* scenarioSubObjs,
+    std::vector<IntegerLShapedCutInfo>* scenarioCutInfos)
 {
     if (subProblems.empty()) {
         std::cerr << "Integer L-shaped sub-problems are not initialized" << std::endl;
@@ -296,6 +319,9 @@ Status IntegerLShaped::EvaluateSubProblems(const std::vector<double>& zValues, b
     if (scenarioSubObjs != nullptr) {
         scenarioSubObjs->assign(subProblems.size(), 0.0);
     }
+    if (scenarioCutInfos != nullptr) {
+        scenarioCutInfos->assign(subProblems.size(), IntegerLShapedCutInfo{});
+    }
 
     size_t scenarioResultIdx = 0;
     for (auto& future : futures) {
@@ -315,10 +341,13 @@ Status IntegerLShaped::EvaluateSubProblems(const std::vector<double>& zValues, b
         if (scenarioSubObjs != nullptr) {
             (*scenarioSubObjs)[scenarioResultIdx] = result.subObj;
         }
+        if (scenarioCutInfos != nullptr) {
+            (*scenarioCutInfos)[scenarioResultIdx] = result.cutInfo;
+        }
         ++scenarioResultIdx;
 
         if (!result.cutInfo.isOptimalityCut) {
-            if (scenarioSubObjs != nullptr) {
+            if (scenarioSubObjs != nullptr && scenarioCutInfos == nullptr) {
                 throw std::runtime_error("Integer L-shaped scenario lower bounds require optimal sub-problem results");
             }
             cutInfo = result.cutInfo;
@@ -420,8 +449,16 @@ Status IntegerLShaped::Solve()
 
         double relaxedQValue = 0.0;
         IntegerLShapedCutInfo continuousCutInfo;
+        std::vector<double> scenarioRelaxedQValues;
+        std::vector<IntegerLShapedCutInfo> scenarioContinuousCutInfos;
         const auto relaxedStart = Tools::Clock::now();
-        Status relaxedStatus = EvaluateSubProblems(zValues, true, continuousCutInfo, relaxedQValue);
+        Status relaxedStatus = ERROR;
+        if constexpr (kRelaxedCutStrategy == RelaxedCutStrategy::MultiCut) {
+            relaxedStatus = EvaluateSubProblems(zValues, true, continuousCutInfo, relaxedQValue,
+                &scenarioRelaxedQValues, &scenarioContinuousCutInfos);
+        } else {
+            relaxedStatus = EvaluateSubProblems(zValues, true, continuousCutInfo, relaxedQValue);
+        }
         const auto relaxedEnd = Tools::Clock::now();
         const long long relaxedMs = Tools::ElapsedMs(relaxedStart, relaxedEnd);
         if (relaxedStatus != OK) { // Error in solving relaxed sub-problem
@@ -447,14 +484,35 @@ Status IntegerLShaped::Solve()
             continue;
         }
         // Relaxed sub-problem feasible and can be cut.
-        if (std::isfinite(relaxedQValue) && thetaValue + tolerance < relaxedQValue) {
-            const CutEval cutContinuous = BuildContinuousCut(continuousCutInfo, zValues, iter);
-            model->addConstr(cutContinuous.expr <= theta, cutContinuous.name);
+        if (std::isfinite(relaxedQValue)) {
+            bool relaxedCutViolated = false;
+            if constexpr (kRelaxedCutStrategy == RelaxedCutStrategy::MultiCut) {
+                if (scenarioRelaxedQValues.size() != relaxedThetaVars.size() ||
+                    scenarioContinuousCutInfos.size() != relaxedThetaVars.size()) {
+                    throw std::runtime_error("Integer L-shaped relaxed multi-cut size mismatch");
+                }
+                for (size_t scenarioIdx = 0; scenarioIdx < scenarioContinuousCutInfos.size(); ++scenarioIdx) {
+                    const double thetaScenarioValue = relaxedThetaVars[scenarioIdx].get(GRB_DoubleAttr_X);
+                    if (thetaScenarioValue + tolerance >= scenarioRelaxedQValues[scenarioIdx]) {
+                        continue;
+                    }
+
+                    const CutEval cutContinuous = BuildContinuousCut(scenarioContinuousCutInfos[scenarioIdx],
+                        zValues, iter, static_cast<int>(scenarioIdx));
+                    model->addConstr(cutContinuous.expr <= relaxedThetaVars[scenarioIdx], cutContinuous.name);
+                    relaxedCutViolated = true;
+                }
+            } else if (thetaValue + tolerance < relaxedQValue) {
+                const CutEval cutContinuous = BuildContinuousCut(continuousCutInfo, zValues, iter);
+                model->addConstr(cutContinuous.expr <= theta, cutContinuous.name);
+                relaxedCutViolated = true;
+            }
+
             const double relaxedObj = fixedCost + relaxedQValue;
             const bool canImproveUb = relaxedObj + tolerance < bestUpperBound;
-            const bool solveInteger = kPruneByUb && canImproveUb;
+            const bool solveInteger = !relaxedCutViolated || (kPruneByUb && canImproveUb);
 
-            if (!solveInteger) {
+            if (relaxedCutViolated && !solveInteger) {
                 std::cout << "Integer L-shaped iter " << iter << ", theta=" << thetaValue << ", Q_lp(z)=" << relaxedQValue;
                 if (std::isfinite(bestUpperBound)) {
                     const double denom = std::max(1.0, std::fabs(bestUpperBound));

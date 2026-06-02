@@ -78,10 +78,11 @@ private:
         double delta, double lowerBound, int iter) const;
 
     CutEval BuildContinuousCut(const IntegerLShapedCutInfo& cutInfo, const std::vector<double>& zCurrent,
-        int iter) const;
+        int iter, int scenarioIndex = -1) const;
 
     Status EvaluateSubProblems(const std::vector<double>& zValues, bool relaxed,
-        IntegerLShapedCutInfo& cutInfo, double& subObj, std::vector<double>* scenarioSubObjs = nullptr);
+        IntegerLShapedCutInfo& cutInfo, double& subObj, std::vector<double>* scenarioSubObjs = nullptr,
+        std::vector<IntegerLShapedCutInfo>* scenarioCutInfos = nullptr);
 
     Status ApplyWarmStart();
 
@@ -101,6 +102,7 @@ private:
     std::unique_ptr<ISubProblemStrategy_IntegerLShaped> subProblemStrategy;
     std::vector<std::unique_ptr<ScenarioSubProblem>> subProblems;
     std::vector<GRBVar> zVars;
+    std::vector<GRBVar> relaxedThetaVars;
     GRBVar theta;
 
     double globalLowerBound;
